@@ -1,14 +1,14 @@
-# Ex Libris on TrueNAS SCALE (Apps → Discover → ⋮ → Install via YAML), or `docker compose up -d --build`.
+# Ex Libris on TrueNAS SCALE: Apps → Discover Apps → ⋮ → Install via YAML, paste this file.
+# The image is built automatically by GitHub from https://github.com/stephan-brumbaugh/exlibris
+# To update later: Apps → exlibris → Update (or "Pull image" then restart).
 #
-# Before the first start, create these datasets/folders:
-#   /mnt/HomeLab/exlibris/app    ← put this project's files here (Dockerfile, package.json, src/, public/, admin/)
-#   /mnt/HomeLab/exlibris/data   ← database, covers, uploads and decorations live here (back this one up)
-# and point the /library mount at the folder that already holds your e-books and PDFs.
+# Before the first start, create this dataset/folder (back it up — it holds the database, covers, uploads, decorations):
+#   /mnt/HomeLab/exlibris/data
+# and point the /library mount below at the folder that already holds your e-books and PDFs.
 services:
   exlibris:
-    build:
-      context: /mnt/HomeLab/exlibris/app
-    image: exlibris:local
+    image: ghcr.io/stephan-brumbaugh/exlibris:latest
+    pull_policy: always
     container_name: exlibris
     restart: unless-stopped
     # 568 is the TrueNAS "apps" user. It needs write access to the data folder
