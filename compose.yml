@@ -1,0 +1,35 @@
+# Ex Libris on TrueNAS SCALE (Apps → Discover → ⋮ → Install via YAML), or `docker compose up -d --build`.
+#
+# Before the first start, create these datasets/folders:
+#   /mnt/HomeLab/exlibris/app    ← put this project's files here (Dockerfile, package.json, src/, public/, admin/)
+#   /mnt/HomeLab/exlibris/data   ← database, covers, uploads and decorations live here (back this one up)
+# and point the /library mount at the folder that already holds your e-books and PDFs.
+services:
+  exlibris:
+    build:
+      context: /mnt/HomeLab/exlibris/app
+    image: exlibris:local
+    container_name: exlibris
+    restart: unless-stopped
+    # 568 is the TrueNAS "apps" user. It needs write access to the data folder
+    # and read access to the library folder.
+    user: "568:568"
+    ports:
+      - "13100:3000"
+    environment:
+      ADMIN_PASSWORD: "change-me-please"   # first sign-in password; change it in Settings and you can delete this line
+      LIBRARY_DIRS: /library               # several folders: "/library,/comics"
+      SCAN_INTERVAL_MINUTES: "60"          # 0 = only scan at startup and when you press "Scan now"
+      TZ: America/Chicago
+    volumes:
+      - /mnt/HomeLab/exlibris/data:/data
+      - /mnt/HomeLab/Media/Books:/library:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
