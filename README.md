@@ -12,22 +12,17 @@ One container. SQLite database. Your book files stay where they are.
 
 ## Install on TrueNAS SCALE
 
-1. **Create two datasets or folders.**
-   - `/mnt/HomeLab/exlibris/app`: copy this project into it (`Dockerfile`, `package.json`, `package-lock.json`, `src/`, `public/`, `admin/`).
-   - `/mnt/HomeLab/exlibris/data`: the database, covers, uploads and decorations are stored here. **Back up this folder.**
-2. **Set permissions.** The app runs as the TrueNAS `apps` user (568). That user needs:
-   - write access to `…/exlibris/data`
-   - read access to the folder that holds your e-books
-3. **Edit `compose.yml`.**
-   - Point the `/library` volume at your e-book folder.
-   - Change `ADMIN_PASSWORD`.
-   - Optionally change the port (default `13100`, so it can run alongside the old app while you compare them).
-4. **Install the app.** In TrueNAS go to **Apps → Discover Apps → ⋮ → Install via YAML** and paste `compose.yml`. Or, in a shell: `cd /mnt/HomeLab/exlibris/app && docker compose up -d --build`.
-5. **Sign in.** Open `http://<truenas-ip>:13100/admin` and use the password from step 3. Then change it in **Settings**. After that you can delete the `ADMIN_PASSWORD` line; keep the line if you'd like it as a lock-out recovery key.
+GitHub builds the app automatically (see `.github/workflows/docker.yml`) and publishes it as `ghcr.io/stephan-brumbaugh/exlibris:latest`. Nothing needs to be copied onto the NAS.
+
+1. **Create a dataset** for the app's data, for example `/mnt/HomeLab/exlibris/data`. Give the TrueNAS `apps` user (568) write access to it, and read access to your e-book folder.
+2. **Install the app.** Go to **Apps → Discover Apps → ⋮ → Install via YAML** and paste `compose.yml`. Before saving:
+   - point the `/library` volume at your e-book folder
+   - change `ADMIN_PASSWORD`
+3. **Sign in.** Open `http://<truenas-ip>:13100/admin` and use that password. Then change it in **Settings**.
 
 ### Updating
 
-Replace the files in `…/exlibris/app` and rebuild (`docker compose up -d --build`, or **Update** in TrueNAS). Database changes are applied automatically when the app starts.
+Push changes to `main` and wait for the **Build image** action to finish (about 2–3 minutes). Then in TrueNAS go to **Apps → exlibris → Update**, or stop and start the app; it always pulls the latest image. Database changes are applied automatically when the app starts.
 
 ### Settings (environment variables)
 
