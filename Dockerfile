@@ -21,7 +21,8 @@ COPY src ./src
 COPY public ./public
 COPY admin ./admin
 
-ENV PORT=3000 DATA_DIR=/data LIBRARY_DIRS=/library
+ARG APP_VERSION=dev
+ENV PORT=3000 DATA_DIR=/data LIBRARY_DIRS=/library APP_VERSION=$APP_VERSION
 RUN mkdir -p /data /library && chown -R node:node /data
 VOLUME ["/data"]
 EXPOSE 3000

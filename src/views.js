@@ -60,6 +60,7 @@ export function adminPage({ title, body, data = {}, script = null, active = '' }
   <div class="side-foot">
     <a href="/" target="_blank" rel="noopener">View public site ↗</a>
     <form method="post" action="/admin/logout"><button class="linkish">Sign out</button></form>
+    <span class="muted small" title="Build of the running app">Version ${h(String(process.env.APP_VERSION || 'dev').slice(0, 7))}</span>
   </div>
 </aside>
 <main class="content">

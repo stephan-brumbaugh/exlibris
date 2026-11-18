@@ -132,4 +132,4 @@ publicRouter.get('/media/:id', (req, res, next) => {
   res.sendFile(path.join(config.mediaDir, m.filename), { maxAge: '30d' }, err => err && next());
 });
 
-publicRouter.get('/healthz', (req, res) => { getDb().prepare('SELECT 1').get(); res.json({ ok: true }); });
+publicRouter.get('/healthz', (req, res) => { getDb().prepare('SELECT 1').get(); res.json({ ok: true, version: process.env.APP_VERSION || 'dev' }); });
