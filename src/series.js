@@ -14,7 +14,13 @@ export function listSeries() {
     by.get(k).books.push(b);
   }
   const colors = seriesColorMap();
-  const shelves = new Map(getDb().prepare("SELECT generated_by, id, slug FROM shelves WHERE generated_by LIKE 'series:%'").all().map(s => [s.generated_by.slice(7).toLowerCase(), s]));
+  // series:<collection>:<name> (older shelves: series:<name>)
+  const shelves = new Map();
+  for (const sh of getDb().prepare("SELECT generated_by, id, slug, collection FROM shelves WHERE generated_by LIKE 'series:%'").all()) {
+    const name = sh.generated_by.replace(/^series:(physical:|digital:|any:)?/, '').toLowerCase();
+    if (!shelves.has(name)) shelves.set(name, []);
+    shelves.get(name).push({ id: sh.id, slug: sh.slug, collection: sh.collection });
+  }
   return [...by.entries()].map(([k, s]) => {
     s.books.sort((a, b) => (a.series_index ?? 1e9) - (b.series_index ?? 1e9));
     const nums = s.books.map(b => b.series_index).filter(n => Number.isInteger(n) && n > 0);
@@ -30,7 +36,7 @@ export function listSeries() {
       authors: [...new Set(s.books.map(b => b.authors).filter(Boolean))].slice(0, 3).join(' · '),
       missing, locations, scattered: locations.filter(l => !/^loose$/i.test(l)).length > 1,
       firstCoverColor: first?.cover_color || null,
-      shelf: shelves.get(k) || null,
+      shelves: shelves.get(k) || [],
       books: s.books.map(b => ({ id: b.id, title: b.title, series_index: b.series_index, cover: b.cover ? `/covers/${b.cover}` : null, location: b.location, location_position: b.location_position })),
     };
   }).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
@@ -54,17 +60,22 @@ export function renameSeries(from, to) {
  * mode 'combined': one smart bookcase holding every series of at least `minBooks`, each series on its own shelf.
  * mode 'each': one smart bookcase per series of at least `minBooks`.
  */
-export function createSeriesShelves({ mode = 'combined', minBooks = 3, names = null } = {}) {
+export function createSeriesShelves({ mode = 'combined', minBooks = 3, names = null, collection = 'any' } = {}) {
+  const where = ['physical', 'digital'].includes(collection) ? collection : 'any';
+  const suffix = where === 'physical' ? ' at home' : where === 'digital' ? ' (digital)' : '';
   if (mode === 'combined') {
-    const id = createShelf({ name: minBooks > 1 ? `Series (${minBooks}+ books)` : 'Series', description: 'Every series, each on its own shelf, in reading order',
-      kind: 'smart', sort: 'series', display: 'mixed', rules: { inSeries: true, minSeries: minBooks, groupBy: 'series' } });
+    const id = createShelf({ name: `Series${suffix}`, description: 'Every series, each on its own shelf, in reading order',
+      kind: 'smart', sort: 'series', display: 'mixed', collection: where, rules: { inSeries: true, minSeries: minBooks, groupBy: 'series' } });
     return [{ id }];
   }
   const out = [];
-  const list = listSeries().filter(s => (names ? names.includes(s.name) : s.count >= minBooks) && !s.shelf);
+  const list = listSeries().filter(s => (names ? names.includes(s.name) : s.count >= minBooks));
+  const taken = new Set(getDb().prepare("SELECT generated_by FROM shelves WHERE generated_by LIKE 'series:%'").all().map(r => r.generated_by.toLowerCase()));
   for (const s of list) {
-    const id = createShelf({ name: s.name, description: s.authors || null, kind: 'smart', sort: 'series', display: 'mixed',
-      rules: { seriesExact: s.name }, generated_by: `series:${s.name}` });
+    const gen = `series:${where}:${s.name}`;
+    if (taken.has(gen.toLowerCase())) continue;
+    const id = createShelf({ name: `${s.name}${suffix}`, description: s.authors || null, kind: 'smart', sort: 'series', display: 'mixed',
+      collection: where, rules: { seriesExact: s.name }, generated_by: gen });
     out.push({ id, name: s.name });
   }
   return out;

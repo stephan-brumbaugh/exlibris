@@ -120,6 +120,18 @@ async function pickSpineImage() {
 const spineImgText = el('span', { class: 'small muted' });
 function spineImgLabel() { spineImgText.textContent = F.spine_image.value ? `Using image #${F.spine_image.value}` : 'Generated spine'; }
 
+function mergePanel() {
+  const other = el('input', { type: 'number', placeholder: 'other book’s number', style: { width: '170px' } });
+  return el('section', { class: 'panel stack' }, el('h2', {}, 'Same book, separate entry?'),
+    el('p', { class: 'small muted' }, 'If this book also exists as a second entry (for example the print copy here and the e-book there), join them so each side can see the other. The other entry’s files, audiobook links and shelf places move onto this one, then it is removed. The number is in the address of its edit page: /admin/books/123. The “Match copies” page finds likely pairs for you.'),
+    el('div', { class: 'row' }, other, el('button', { class: 'btn', onclick: guard(async () => {
+      const n = Number(other.value); if (!n) return toast('Enter the other book’s number', true);
+      const o = await api('GET', `/books/${n}`);
+      if (!confirm(`Join “${o.book.title}” (${o.book.binding || 'no format'}) into “${data.book.title}”?`)) return;
+      await api('POST', `/books/${id}/merge`, { otherId: n }); toast('Joined'); data = await api('GET', `/books/${id}`); render();
+    }) }, 'Join into this book')));
+}
+
 function render() {
   dirty = false;
   const b = data.book;
@@ -178,7 +190,8 @@ function render() {
         filesPanel(),
         el('section', { class: 'panel' }, el('h2', {}, 'Private'), el('div', { class: 'form-grid' },
           input('notes', 'Notes (never shown publicly)', { textarea: true }),
-          el('label', { class: 'inline' }, hidden, 'Hide this book from the public site'))))),
+          el('label', { class: 'inline' }, hidden, 'Hide this book from the public site'))),
+        mergePanel())),
   );
   spineImgLabel();
   updatePreview();

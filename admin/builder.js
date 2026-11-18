@@ -252,7 +252,7 @@ function addTab() {
     toast(`Added ${picked.length} book(s)`);
   };
   const search = debounce(guard(async () => {
-    results = await api('GET', `/books/lite?q=${encodeURIComponent(q.value)}&sort=${sortSel.value}&limit=200`);
+    results = await api('GET', `/books/lite?q=${encodeURIComponent(q.value)}&sort=${sortSel.value}&limit=200&collection=${shelf.collection || 'any'}`);
     draw();
   }), 250);
   function draw() {
@@ -272,7 +272,9 @@ function addTab() {
     ...media.map(m => el('div', { class: 'media-tile pick', title: `Add ${m.original_name}`, onclick: () => insert([{ kind: 'decor', media_id: m.id, media: { id: m.id, url: m.url }, size: 'm' }]) },
       el('div', { class: 'img', style: { height: '60px' } }, el('img', { src: m.url, alt: '', style: { maxHeight: '60px' } })))));
   box.append(
-    el('div', { class: 'panel stack' }, el('h2', {}, 'Books'), q, el('div', { class: 'row small' }, 'Sort', sortSel, el('label', { class: 'inline' }, hideShelved, 'hide ones already here')), list,
+    el('div', { class: 'panel stack' }, el('h2', {}, 'Books'),
+      shelf.collection !== 'any' ? el('p', { class: 'small muted', style: { margin: 0 } }, shelf.collection === 'physical' ? 'This is a home bookcase: only books you own in print are listed.' : 'This is a digital bookcase: only books with a file or audiobook are listed.') : null,
+      q, el('div', { class: 'row small' }, 'Sort', sortSel, el('label', { class: 'inline' }, hideShelved, 'hide ones already here')), list,
       el('div', { class: 'row' }, addBtn, el('span', { class: 'small muted' }, 'as'), asSel, el('button', { class: 'linkish small', onclick: () => { results.filter(b => !onShelf().has(b.id)).forEach(b => chosen.add(b.id)); draw(); refreshAdd(); } }, 'select all')),
       el('p', { class: 'small muted' }, selected.size ? 'New items go right after your selection.' : 'New items go at the end of the shelf.')),
     el('div', { class: 'panel stack' }, el('h2', {}, 'Structure'),
@@ -408,6 +410,8 @@ function settingsTab() {
       el('label', {}, 'Name', name), el('label', {}, 'Description (shown under the name plate)', desc),
       el('label', {}, 'Web address', el('div', { class: 'row small' }, '/shelf/', slug)),
       el('label', { class: 'inline' }, pub, 'Visible on the public site'),
+      el('label', {}, 'This bookcase holds', el('select', { onchange: guard(async e => { await api('PATCH', `/shelves/${shelfId}`, { collection: e.target.value }); const r = await api('GET', `/shelves/${shelfId}`); shelf = r.shelf; items = r.items.map(toLocal); drawStage(); drawInspector(); toast('Saved'); }) },
+        ...[['physical', 'Books at home (print copies only)'], ['digital', 'Digital library (e-books & audiobooks only)'], ['any', 'Anything']].map(([v, l]) => el('option', { value: v, selected: (shelf.collection || 'any') === v }, l)))),
       el('div', { class: 'row' }, el('a', { class: 'btn small', href: `/shelf/${shelf.slug}`, target: '_blank' }, 'View on site ↗'))));
   if (manual() && items.some(i => i.kind === 'label' && /^([A-Za-z]{1,3}\d{1,3}|Loose)\b/i.test(i.text || ''))) {
     panel.append(el('div', { class: 'panel stack' }, el('h2', {}, 'Home shelf locations'),

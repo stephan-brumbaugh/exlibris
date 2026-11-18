@@ -48,6 +48,15 @@ function setupTooltip(container, books) {
 }
 
 /* ───────────── Book detail ───────────── */
+/** Which copies you own — the same card appears from a home bookcase or a digital one. */
+function ownedBadges(b) {
+  const print = !!b.location || ['Hardback', 'Paperback', 'Other'].includes(b.binding);
+  const digital = (b.files || []).length > 0;
+  const audio = (b.links || []).some(l => ['abs', 'plex', 'audible'].includes(l.kind));
+  const tags = [print && `Print copy at home${b.binding && b.binding !== 'Other' ? ` (${b.binding.toLowerCase()})` : ''}`, digital && 'Digital copy', audio && 'Audiobook'].filter(Boolean);
+  return tags.length ? el('p', { class: 'bk-owned' }, ...tags.map(t => el('span', {}, t))) : null;
+}
+
 function bookCard(b, { modal = false } = {}) {
   const searchLink = (q, label) => el('a', { href: `/search?q=${encodeURIComponent(q)}` }, label || q);
   const authors = (b.authors || '').split(/\s*;\s*/).filter(Boolean);
@@ -80,6 +89,7 @@ function bookCard(b, { modal = false } = {}) {
       b.subtitle ? el('p', { class: 'bk-sub' }, b.subtitle) : null,
       authors.length ? el('p', { class: 'bk-author' }, 'by ', ...authors.flatMap((a, i) => [i ? ', ' : '', searchLink(a)])) : null,
       b.series ? el('p', { class: 'bk-series' }, b.series_index ? `Book ${fmtIndex(b.series_index)} of ` : 'Part of ', searchLink(b.series)) : null,
+      ownedBadges(b),
       actions.childElementCount ? actions : null,
       where,
       desc, more,
@@ -181,10 +191,22 @@ function homePage() {
   stats.replaceChildren(...parts.map(p => el('span', {}, p)));
   const hall = document.getElementById('hall');
   if (!shelves.length) hall.append(el('p', { class: 'hall-empty' }, 'No shelves yet. Sign in to the admin area to build your first bookcase.'));
-  for (const s of shelves) {
-    const bc = bookcase({ shelf: s.shelf, theme: s.theme, items: s.items, rowH: 150 });
-    hall.append(el('a', { class: 'hall-card', href: `/shelf/${s.shelf.slug}`, 'aria-label': `${s.shelf.name}, ${s.total} books` }, bc.root,
-      el('div', { class: 'hall-meta' }, el('span', {}, `${s.total} book${s.total === 1 ? '' : 's'}`), el('span', {}, 'Browse →'))));
+  const groups = [
+    ['physical', 'At home', 'The real bookcases around the house'],
+    ['digital', 'Digital library', 'E-books, PDFs and audiobooks'],
+    ['any', 'Other shelves', null],
+  ];
+  for (const [key, title, sub] of groups) {
+    const list = shelves.filter(s => (s.shelf.collection || 'any') === key);
+    if (!list.length) continue;
+    const grid = el('section', { class: 'hall', 'aria-label': title });
+    for (const s of list) {
+      const bc = bookcase({ shelf: s.shelf, theme: s.theme, items: s.items, rowH: 150 });
+      grid.append(el('a', { class: 'hall-card', href: `/shelf/${s.shelf.slug}`, 'aria-label': `${s.shelf.name}, ${s.total} books` }, bc.root,
+        el('div', { class: 'hall-meta' }, el('span', {}, `${s.total} book${s.total === 1 ? '' : 's'}`), el('span', {}, 'Browse →'))));
+    }
+    const showHeads = shelves.some(s => (s.shelf.collection || 'any') !== key);
+    hall.append(el('div', { class: 'hall-group' }, showHeads ? el('h2', { class: 'section-title' }, title) : null, showHeads && sub ? el('p', { class: 'hall-sub' }, sub) : null, grid));
   }
   if (recent?.length) {
     const sec = document.getElementById('recent');

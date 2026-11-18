@@ -141,6 +141,11 @@ export function withFiles(books) {
   return books.map(b => publicBook(b, by.get(b.id)));
 }
 
+/** A book you own in print: it has a place at home, or a print binding. */
+export const PHYSICAL_SQL = "(COALESCE(books.location,'') <> '' OR books.binding IN ('Hardback','Paperback','Other'))";
+/** A book you own digitally: a file to download, or somewhere to listen to it. */
+export const DIGITAL_SQL = "(EXISTS (SELECT 1 FROM book_files f WHERE f.book_id = books.id AND f.missing = 0) OR COALESCE(books.abs_url,'') <> '' OR COALESCE(books.plex_url,'') <> '' OR COALESCE(books.audible_url,'') <> '')";
+
 export const SORTS = {
   author: "CASE WHEN COALESCE(author_sort,'') = '' THEN 1 ELSE 0 END, author_sort, series, series_index, sort_title",
   title: 'sort_title',
@@ -181,6 +186,8 @@ export function queryBooks(rules = {}, { sort = 'author', includeHidden = false,
   if (rules.has === 'files') where.push('EXISTS (SELECT 1 FROM book_files f WHERE f.book_id = books.id AND f.missing = 0)');
   if (rules.has === 'audio') where.push("(COALESCE(abs_url,'') <> '' OR COALESCE(plex_url,'') <> '' OR COALESCE(audible_url,'') <> '')");
   if (rules.has === 'physical') where.push("binding IN ('Hardback','Paperback','Other') AND COALESCE(location,'') <> ''");
+  if (rules.collection === 'physical') where.push(PHYSICAL_SQL);
+  if (rules.collection === 'digital') where.push(DIGITAL_SQL);
   if (rules.has === 'nocover') where.push("COALESCE(cover,'') = ''");
   if (rules.has === 'cover') where.push("COALESCE(cover,'') <> ''");
   if (Array.isArray(rules.ids)) { where.push(`id IN (${rules.ids.map(Number).filter(Number.isFinite).join(',') || 'NULL'})`); }

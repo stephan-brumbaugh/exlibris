@@ -25,7 +25,7 @@ function shelfPayload(shelf, { previewLimit = null } = {}) {
     items = items.slice(0, previewLimit).filter(i => i.kind !== 'break');
   }
   return {
-    shelf: { id: shelf.id, slug: shelf.slug, name: shelf.name, description: shelf.description, display: shelf.display, kind: shelf.kind },
+    shelf: { id: shelf.id, slug: shelf.slug, name: shelf.name, description: shelf.description, display: shelf.display, kind: shelf.kind, collection: shelf.collection },
     theme: resolveTheme(siteSettings().theme || {}, shelf.theme || {}),
     items, total,
   };
@@ -44,7 +44,7 @@ publicRouter.get('/', (req, res) => {
     body: `<section class="hero"><h1>${h(site.title)}</h1>${site.tagline ? `<p class="tagline">${h(site.tagline)}</p>` : ''}
       ${site.homeIntro ? `<div class="intro">${h(site.homeIntro).replace(/\n/g, '<br>')}</div>` : ''}
       <p class="stats" id="stats"></p></section>
-      <section id="hall" class="hall" aria-label="Bookcases"></section>
+      <div id="hall"></div>
       <section id="recent" class="recent" aria-label="Recently added"></section>`,
     data: { page: 'home', shelves, counts, recent, theme: resolveTheme(site.theme || {}, {}) },
   }));

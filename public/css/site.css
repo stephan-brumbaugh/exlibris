@@ -48,6 +48,10 @@ main { padding: 0 clamp(16px, 3vw, 36px) 80px; }
 .hall-card .bc-rows { max-height: calc(var(--row-h) * 2); min-height: calc(var(--row-h) * 2); overflow: hidden; }
 .hall-card .bc { pointer-events: none; }
 .hall-meta { display: flex; justify-content: space-between; gap: 12px; padding: 10px 4px 0; font-size: 14px; color: var(--muted); }
+.hall-group { max-width: 1500px; margin: 26px auto 0; }
+.hall-group + .hall-group { margin-top: 64px; }
+.hall-group > .section-title { margin-bottom: 2px; }
+.hall-sub { text-align: center; color: var(--muted); font-style: italic; margin: 0 0 18px; font-size: 15px; }
 .hall-empty { text-align: center; color: var(--muted); padding: 40px 0; grid-column: 1 / -1; }
 .recent { max-width: 1500px; margin: 56px auto 0; }
 .section-title { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 500; margin: 0 0 14px; text-align: center; }
@@ -100,6 +104,8 @@ main { padding: 0 clamp(16px, 3vw, 36px) 80px; }
 .bk-author { margin: 10px 0 0; font-size: 18px; }
 .bk-author a, .bk-series a { color: #6b3e1c; text-decoration-color: rgba(107,62,28,.35); }
 .bk-series { margin: 4px 0 0; color: #5a4a38; }
+.bk-owned { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
+.bk-owned span { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; padding: 2px 9px; border-radius: 999px; border: 1px solid rgba(42,33,24,.25); color: #5a4a38; }
 .bk-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 6px; }
 .btn-pub {
   display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 4px; text-decoration: none;

@@ -6,10 +6,11 @@ let shelves = await api('GET', '/shelves');
 
 const name = el('input', { placeholder: 'e.g. Science Fiction, Bedroom bookcase, Favourites' , style: { minWidth: '260px' } });
 const kind = el('select', {}, el('option', { value: 'manual' }, 'Hand-arranged shelf'), el('option', { value: 'smart' }, 'Smart shelf (fills itself from rules)'));
+const coll = el('select', {}, el('option', { value: 'digital' }, 'Digital library'), el('option', { value: 'physical' }, 'Books at home'), el('option', { value: 'any' }, 'Anything'));
 root.append(el('section', { class: 'panel' }, el('h2', {}, 'New shelf'),
-  el('div', { class: 'row' }, name, kind, el('button', { class: 'btn primary', onclick: guard(async () => {
+  el('div', { class: 'row' }, name, kind, coll, el('button', { class: 'btn primary', onclick: guard(async () => {
     if (!name.value.trim()) return toast('Give the shelf a name', true);
-    const { id } = await api('POST', '/shelves', { name: name.value.trim(), kind: kind.value, rules: kind.value === 'smart' ? { has: 'files' } : {} });
+    const { id } = await api('POST', '/shelves', { name: name.value.trim(), kind: kind.value, collection: coll.value, rules: {} });
     location.href = `/admin/shelves/${id}`;
   }) }, 'Create')),
   el('p', { class: 'muted small' }, 'Hand-arranged shelves let you drag books, mix spines and covers, add pictures, GIFs and labels. Smart shelves stay up to date automatically (for example “every e-book by Terry Pratchett”, or “everything with an audiobook”).')));
@@ -21,7 +22,8 @@ function render() {
   const tbody = el('tbody', {}, ...shelves.map(s => el('tr', { 'data-id': s.id },
     el('td', { style: { cursor: 'grab', width: '24px' }, class: 'muted' }, '⋮⋮'),
     el('td', {}, el('a', { href: `/admin/shelves/${s.id}` }, el('strong', {}, s.name)), s.description ? el('div', { class: 'small muted' }, s.description) : null),
-    el('td', {}, el('span', { class: 'chip' }, s.kind === 'smart' ? 'smart' : 'arranged'), s.generated_by?.startsWith('import:') ? el('span', { class: 'chip', style: { marginLeft: '4px' } }, 'from import') : null),
+    el('td', {}, el('span', { class: `chip${s.collection === 'physical' ? ' warn' : s.collection === 'digital' ? ' ok' : ''}`, style: { marginRight: '4px' } }, s.collection === 'physical' ? 'at home' : s.collection === 'digital' ? 'digital' : 'mixed'),
+      el('span', { class: 'chip' }, s.kind === 'smart' ? 'smart' : 'arranged'), s.generated_by?.startsWith('import:') ? el('span', { class: 'chip', style: { marginLeft: '4px' } }, 'from import') : null),
     el('td', {}, s.kind === 'smart' ? '—' : String(s.book_count)),
     el('td', {}, el('label', { class: 'inline' }, el('input', { type: 'checkbox', checked: s.is_public, onchange: guard(async e => { await api('PATCH', `/shelves/${s.id}`, { is_public: e.target.checked }); toast(e.target.checked ? 'Now public' : 'Now private'); }) }), 'Public')),
     el('td', { class: 'row' },

@@ -1,4 +1,4 @@
-import { api, el, guard, toast, app, dropZone, uploadForm } from './common.js';
+import { api, el, guard, toast, app, dropZone, uploadForm, watchJob } from './common.js';
 
 const root = app();
 const step2 = el('div');
@@ -64,3 +64,31 @@ function showOptions(info) {
       } finally { e.target.disabled = false; e.target.textContent = 'Import'; }
     }) }, 'Import'))));
 }
+
+/* ───────── From ShelfHaven ───────── */
+const shJobs = el('div');
+const shUrl = el('input', { value: 'http://10.10.20.123:13000', style: { minWidth: '260px' } });
+const shEmail = el('input', { type: 'email', autocomplete: 'off', placeholder: 'the email you sign in to ShelfHaven with' });
+const shPass = el('input', { type: 'password', autocomplete: 'off' });
+const shAbs = el('input', { placeholder: 'e.g. http://10.10.20.123:30067/audiobookshelf (optional)', style: { minWidth: '320px' } });
+root.append(el('section', { class: 'panel stack', style: { marginTop: '28px' } },
+  el('h2', {}, 'Bring books over from ShelfHaven'),
+  el('p', { class: 'muted' }, 'Copies every e-book and PDF out of your old ShelfHaven, with its cover, series and Audiobookshelf link. A book you also own in print is joined to its print copy instead of appearing twice. Running it again only picks up what is new.'),
+  el('h3', {}, 'Option 1 — from the running ShelfHaven app'),
+  el('div', { class: 'form-grid' }, el('label', {}, 'ShelfHaven address', shUrl), el('label', {}, 'Email', shEmail), el('label', {}, 'Password', shPass),
+    el('label', { class: 'wide' }, 'Audiobookshelf address, used to rebuild audiobook links', shAbs)),
+  el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: guard(async () => {
+    const { job } = await api('POST', '/shelfhaven/server', { url: shUrl.value.trim(), email: shEmail.value.trim(), password: shPass.value, absUrl: shAbs.value.trim() });
+    shPass.value = '';
+    watchJob(job, shJobs);
+  }) }, 'Import from ShelfHaven')),
+  el('p', { class: 'small muted' }, 'Your ShelfHaven password is only used for this import and is not saved.'),
+  el('h3', {}, 'Option 2 — from a ShelfHaven backup file'),
+  el('p', { class: 'small muted' }, 'If your ShelfHaven has Admin → Backup, download a backup there and drop the .zip here.'),
+  dropZone({ accept: '.zip', multiple: false, label: el('div', {}, el('b', {}, 'Drop the ShelfHaven backup .zip'), el('br'), 'or click to choose'), onFiles: guard(async ([f]) => {
+    const fd = new FormData(); fd.append('file', f); fd.append('absUrl', shAbs.value.trim());
+    toast('Uploading backup…');
+    const { job } = await uploadForm('/shelfhaven/backup', fd);
+    watchJob(job, shJobs);
+  }) }),
+  shJobs));

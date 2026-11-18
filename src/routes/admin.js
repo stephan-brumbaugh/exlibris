@@ -18,6 +18,8 @@ import { refreshCandidates, listCandidates, applyCandidates } from '../integrati
 import { queueAutoEnrich, autoMetadataEnabled } from '../auto.js';
 import { listSeries, setSeriesColor, renameSeries, createSeriesShelves } from '../series.js';
 import * as reorg from '../reorg.js';
+import { findCopyPairs, mergeBooks, ignorePair } from '../copies.js';
+import { importFromServer, importFromBackup } from '../shelfhaven.js';
 import { rebuildCaseShelvesFromDb } from '../importer.js';
 import { PRESETS, FONTS } from '../../public/js/themes.js';
 import { safeFilename, token } from '../util.js';
@@ -75,6 +77,7 @@ adminRouter.get('/add', page('Add books', 'add', 'add.js', undefined, () => ({ l
 adminRouter.get('/media', page('Decorations', 'media', 'media.js'));
 adminRouter.get('/import', page('Import a spreadsheet', 'import', 'import.js'));
 adminRouter.get('/integrations', page('Audiobook links', 'integrations', 'integrations.js'));
+adminRouter.get('/copies', page('Match print & digital copies', 'copies', 'copies.js'));
 adminRouter.get('/series', page('Series', 'series', 'series.js'));
 adminRouter.get('/reorganise', page('Reorganise your shelves', 'reorg', 'reorganise.js'));
 adminRouter.get('/reorganise/print', (req, res) => res.send(printMoves(req.query.by === 'source' ? 'source' : 'dest')));
@@ -133,7 +136,9 @@ api.get('/books', (req, res) => {
 
 api.get('/books/lite', (req, res) => {
   const q = String(req.query.q || '').trim();
-  const rows = queryBooks(q ? { q } : {}, { sort: req.query.sort || 'author', includeHidden: true, limit: Number(req.query.limit) || 60 });
+  const rules = q ? { q } : {};
+  if (['physical', 'digital'].includes(req.query.collection)) rules.collection = req.query.collection;
+  const rows = queryBooks(rules, { sort: req.query.sort || 'author', includeHidden: true, limit: Number(req.query.limit) || 60 });
   res.json(withFiles(rows));
 });
 
@@ -423,6 +428,35 @@ api.post('/integrations/:provider/refresh', (req, res) => {
 });
 api.get('/integrations/:provider/candidates', (req, res) => res.json(listCandidates(req.params.provider, req.query.status || 'pending')));
 api.post('/integrations/:provider/apply', asyncH(async (req, res) => res.json(await applyCandidates(req.params.provider, req.body.actions || []))));
+
+// Print & digital copies of the same book
+api.get('/copies', (req, res) => res.json(findCopyPairs({ min: Number(req.query.min) || 0.7 })));
+api.post('/copies/merge', (req, res) => {
+  const out = { merged: 0, errors: [] };
+  for (const p of req.body.pairs || []) {
+    try { mergeBooks(p.keep, p.drop); out.merged++; } catch (e) { out.errors.push(e.message); }
+  }
+  res.json(out);
+});
+api.post('/copies/ignore', (req, res) => { ignorePair(Number(req.body.keep), Number(req.body.drop)); res.json({ ok: true }); });
+api.post('/books/:id/merge', (req, res) => {
+  try { res.json({ book: mergeBooks(Number(req.params.id), Number(req.body.otherId)) }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ShelfHaven
+api.post('/shelfhaven/server', (req, res) => {
+  const { url, email, password, absUrl } = req.body || {};
+  res.json({ job: startJob('shelfhaven', 'Import from ShelfHaven', async j => { const r = await importFromServer({ url, email, password, absUrl }, j); queueAutoEnrich('ShelfHaven import'); return r; }) });
+});
+api.post('/shelfhaven/backup', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Choose the backup .zip' });
+  const file = req.file.path;
+  res.json({ job: startJob('shelfhaven', 'Import ShelfHaven backup', async j => {
+    try { const r = await importFromBackup(file, { absUrl: req.body.absUrl }, j); queueAutoEnrich('ShelfHaven import'); return r; }
+    finally { fs.rm(file, { force: true }, () => {}); }
+  }) });
+});
 
 // Series
 api.get('/series', (req, res) => res.json(listSeries()));

@@ -142,6 +142,11 @@ const MIGRATIONS = [
     done INTEGER NOT NULL DEFAULT 0
   );
   `,
+  // 3 — keep physical and digital bookcases apart
+  `
+  ALTER TABLE shelves ADD COLUMN collection TEXT NOT NULL DEFAULT 'any';
+  UPDATE shelves SET collection = 'physical' WHERE generated_by LIKE 'import:%';
+  `,
 ];
 
 export function openDb(file = config.dbFile) {

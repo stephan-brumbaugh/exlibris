@@ -39,7 +39,7 @@ export function publicPage({ title, body, data = {}, theme = null, script = 'pub
 export function adminPage({ title, body, data = {}, script = null, active = '' }) {
   const site = siteSettings();
   const nav = [
-    ['/admin', 'Dashboard', 'dash'], ['/admin/books', 'Books', 'books'], ['/admin/shelves', 'Shelves', 'shelves'], ['/admin/series', 'Series', 'series'], ['/admin/reorganise', 'Reorganise at home', 'reorg'],
+    ['/admin', 'Dashboard', 'dash'], ['/admin/books', 'Books', 'books'], ['/admin/copies', 'Match copies', 'copies'], ['/admin/shelves', 'Shelves', 'shelves'], ['/admin/series', 'Series', 'series'], ['/admin/reorganise', 'Reorganise at home', 'reorg'],
     ['/admin/add', 'Add books', 'add'], ['/admin/media', 'Decorations', 'media'], ['/admin/import', 'Import', 'import'],
     ['/admin/integrations', 'Audio links', 'integrations'], ['/admin/settings', 'Settings', 'settings'],
   ];

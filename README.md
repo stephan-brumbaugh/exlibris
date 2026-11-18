@@ -65,6 +65,30 @@ Next, point `LIBRARY_DIRS` (the `/library` volume) at that folder and press **Sc
 
 You can re-import whenever the spreadsheet changes. Books are matched to their earlier rows, so positions update instead of duplicating. If a physical book has the same title and author as an e-book, the two become one entry: it shows where the book sits at home **and** offers the download.
 
+## Home bookcases vs. the digital library
+
+Every bookcase holds one kind of book:
+- **Books at home**: print copies only.
+- **Digital library**: e-books, PDFs and audiobooks only.
+- **Anything**: no restriction.
+
+The bookcases built from your spreadsheet are home bookcases. The first time a digital book arrives, a smart "Digital Library" bookcase is created for it. The home page shows the two groups separately, and the book picker in the builder only offers books that fit the bookcase you're arranging.
+
+A title you own both in print and digitally is stored as **one book**, so it can appear on both kinds of bookcase:
+- Its card on a home bookcase offers the download and the Listen links.
+- Its card on a digital bookcase says which shelf it sits on at home.
+
+Copies whose title and author match exactly are joined automatically. For near-matches, **Match copies** suggests pairs for you to confirm, and a book's edit page has **Join into this book** for joining two entries by hand.
+
+## Moving over from ShelfHaven
+
+On the **Import** page, under *Bring books over from ShelfHaven*, there are two ways to bring your books over:
+
+1. **From the running ShelfHaven app.** Enter its address, plus the email and password you sign in to ShelfHaven with.
+2. **From a backup.** If your ShelfHaven has a backup feature, upload its backup `.zip`.
+
+Either way, Ex Libris copies over every book file along with its cover, series, page count and Audiobookshelf link. To rebuild the audiobook links, also enter your Audiobookshelf address. Books you also own in print are joined to their print copy rather than appearing twice. Running the import again only picks up what's new.
+
 ## Covers, page counts and spine sizes
 
 - **Automatic lookup.** New books (from an import, upload or scan) are looked up automatically on Open Library and Google Books, one at a time. The lookup fills in the cover, description and page count. Each book is tried once, and anything still missing is retried every few hours. You can turn this off in **Settings**.

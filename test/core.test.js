@@ -206,3 +206,111 @@ test('metadata lookup: hardcover page count, gap-filling from a second source, c
     assert.equal((await meta.enrichBook(id)).outcome, 'nomatch');
   } finally { globalThis.fetch = realFetch; }
 });
+
+async function makeEpub(file, title, author) {
+  const zip = new AdmZip();
+  zip.addFile('mimetype', Buffer.from('application/epub+zip'));
+  zip.addFile('META-INF/container.xml', Buffer.from('<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="c.opf"/></rootfiles></container>'));
+  zip.addFile('c.opf', Buffer.from(`<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${title}</dc:title><dc:creator>${author}</dc:creator></metadata><manifest/></package>`));
+  if (file) zip.writeZip(file);
+  return zip.toBuffer();
+}
+
+test('physical and digital bookcases never mix, but one book can sit on both', async () => {
+  // Atlas is print-only; give an e-book-only record and a joined (print + e-book) record.
+  const ebookPath = path.join(tmp, 'Solo Ebook.epub');
+  await makeEpub(ebookPath, 'Solo Ebook', 'Some Writer');
+  const solo = (await ingest.ingestFile(ebookPath, 'upload')).bookId;
+  const mort = getDb().prepare("SELECT id FROM books WHERE title = 'Mort'").get().id;
+  const mortEpub = path.join(tmp, 'Mort.epub');
+  await makeEpub(mortEpub, 'Mort', 'Terry Pratchett');
+  assert.equal((await ingest.ingestFile(mortEpub, 'upload')).bookId, mort); // joined to the print copy
+  const atlas = getDb().prepare("SELECT id FROM books WHERE title = 'Atlas'").get().id;
+
+  const home = shelves.createShelf({ name: 'Home case', collection: 'physical' });
+  const added = shelves.addBooksToShelf(home, [solo, mort, atlas]);
+  assert.equal(added, 2); // the e-book-only title is refused
+  const homeIds = shelves.shelfItems(shelves.getShelf(home)).filter(i => i.kind === 'book').map(i => i.book.id);
+  assert.deepEqual(homeIds.sort(), [mort, atlas].sort());
+
+  const dig = shelves.createShelf({ name: 'Digital', kind: 'smart', collection: 'digital' });
+  const digIds = shelves.shelfItems(shelves.getShelf(dig)).map(i => i.book.id);
+  assert.ok(digIds.includes(solo) && digIds.includes(mort) && !digIds.includes(atlas));
+  // The joined book's card carries both sides
+  const card = books.publicBook(books.getBook(mort), books.bookFiles(mort));
+  assert.equal(card.location, 'B2'); assert.equal(card.files.length, 1);
+});
+
+test('near-match print and digital records can be found and joined', async () => {
+  const copies = await import('../src/copies.js');
+  const ebookPath = path.join(tmp, 'Raise.epub');
+  await makeEpub(ebookPath, 'Raise the Titanic Special Edition', 'Clive Cussler');
+  const digital = (await ingest.ingestFile(ebookPath, 'upload')).bookId;
+  books.updateBook(digital, { abs_url: 'http://abs/item/x' });
+  const pairs = copies.findCopyPairs();
+  const pair = pairs.find(p => p.digital.id === digital);
+  assert.ok(pair, 'pair found');
+  assert.match(pair.print.title, /Raise the Titanic/);
+  const kept = copies.mergeBooks(pair.print.id, digital);
+  assert.equal(kept.abs_url, 'http://abs/item/x');
+  assert.equal(books.bookFiles(kept.id).length, 1);
+  assert.equal(books.getBook(digital), undefined);
+});
+
+test('ShelfHaven backup zip and live server imports', async () => {
+  const sh = await import('../src/shelfhaven.js');
+  const { createServer } = await import('node:http');
+  const epub = await makeEpub(null, 'Guards! Guards!', 'Terry Pratchett'); // matches an existing book
+  const epub2 = await makeEpub(null, 'Brand New Book', 'New Author');
+  const sharp = (await import('sharp')).default;
+  const cover = await sharp({ create: { width: 200, height: 300, channels: 3, background: '#aa3300' } }).jpeg().toBuffer();
+
+  // Backup zip
+  const z = new AdmZip();
+  z.addFile('manifest.json', Buffer.from('{"platform":"ShelfHaven"}'));
+  z.addFile('database.json', Buffer.from(JSON.stringify({ books: [
+    { id: 'b1', title: 'Guards! Guards!', author: 'Terry Pratchett', fileUrl: 'ebooks/u1/gg.epub', originalFormat: 'epub', coverUrl: 'covers/u1/gg.jpg', series: 'Discworld', seriesNumber: 8, pageCount: 288 },
+    { id: 'b2', title: 'Brand New Book', author: 'New Author', fileUrl: 'http://minio:9000/ebooks/u1/new.epub', originalFormat: 'epub', audiobookshelfItemId: 'li_9' },
+    { id: 'b3', title: 'Listen Only', author: 'Voice Person', fileUrl: '', audiobookshelfItemId: 'li_7' },
+  ] })));
+  z.addFile('files/ebooks/u1/gg.epub', epub); z.addFile('files/ebooks/u1/new.epub', epub2); z.addFile('files/covers/u1/gg.jpg', cover);
+  const zipPath = path.join(tmp, 'sh-backup.zip'); z.writeZip(zipPath);
+  const job = { total() {}, tick() {}, msg() {}, log() {}, cancelled: () => false };
+  const r = await sh.importFromBackup(zipPath, { absUrl: 'http://abs.local/audiobookshelf' }, job);
+  assert.equal(r['added to an existing book'], 1);
+  assert.equal(r.new, 2);
+  const newBook = getDb().prepare("SELECT * FROM books WHERE title = 'Brand New Book'").get();
+  assert.equal(newBook.abs_url, 'http://abs.local/audiobookshelf/item/li_9');
+  assert.equal(getDb().prepare("SELECT binding FROM books WHERE title = 'Listen Only'").get().binding, 'Audiobook');
+  const again = await sh.importFromBackup(zipPath, {}, job);
+  assert.equal(again['already imported'], 3);
+
+  // Live server (NextAuth-style sign in)
+  const srv = createServer((req, res) => {
+    const authed = (req.headers.cookie || '').includes('authjs.session-token=ok');
+    const send = (code, body, headers = {}) => { res.writeHead(code, { 'content-type': 'application/json', ...headers }); res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body)); };
+    if (req.url === '/api/auth/csrf') return send(200, { csrfToken: 't' }, { 'set-cookie': 'authjs.csrf-token=t; Path=/' });
+    if (req.url === '/api/auth/callback/credentials') {
+      let b = ''; req.on('data', c => { b += c; }); req.on('end', () => {
+        const ok = new URLSearchParams(b).get('password') === 'pw';
+        send(302, '', ok ? { 'set-cookie': 'authjs.session-token=ok; Path=/; HttpOnly', location: '/' } : { location: '/login?error=1' });
+      }); return;
+    }
+    if (req.url === '/api/auth/session') return send(200, authed ? { user: { email: 'a@b' } } : {});
+    if (!authed) return send(401, { error: 'Unauthorized' });
+    if (req.url === '/api/books') return send(200, { books: [{ id: 's1', title: 'Server Book', author: 'Remote Writer', fileUrl: '/api/books/s1/download', coverUrl: '/api/books/s1/cover' }], total: 1 });
+    if (req.url === '/api/books/s1') return send(200, { id: 's1', title: 'Server Book', author: 'Remote Writer', series: 'Remote Saga', seriesNumber: 2, fileUrl: 'ebooks/s1.epub', originalFormat: 'epub', coverUrl: '/api/books/s1/cover' });
+    if (req.url === '/api/books/s1/download') return send(200, epub2, { 'content-type': 'application/epub+zip' });
+    if (req.url === '/api/books/s1/cover') return send(200, cover, { 'content-type': 'image/jpeg' });
+    send(404, {});
+  });
+  await new Promise(r2 => srv.listen(0, r2));
+  try {
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    await assert.rejects(sh.importFromServer({ url: base, email: 'a@b', password: 'wrong' }, job), /did not accept/);
+    const r3 = await sh.importFromServer({ url: base, email: 'a@b', password: 'pw' }, job);
+    assert.equal(r3.new + r3['added to an existing book'], 1);
+    const sb = getDb().prepare("SELECT * FROM books WHERE series = 'Remote Saga'").get();
+    assert.ok(sb && sb.cover, 'series and cover came across');
+  } finally { srv.close(); }
+});

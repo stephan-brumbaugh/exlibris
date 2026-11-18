@@ -2,6 +2,8 @@ import { getDb } from './db.js';
 import { queryBooks, withFiles } from './books.js';
 import { slugify } from './util.js';
 
+export const COLLECTIONS = ['physical', 'digital', 'any'];
+
 function parseJson(s, d) { try { return s ? JSON.parse(s) : d; } catch { return d; } }
 
 export function listShelves({ publicOnly = false } = {}) {
@@ -33,8 +35,9 @@ export function uniqueSlug(name, exceptId = null) {
 export function createShelf(data) {
   const db = getDb();
   const pos = (db.prepare('SELECT MAX(position) AS m FROM shelves').get().m ?? -1) + 1;
-  const info = db.prepare(`INSERT INTO shelves (slug, name, description, kind, rules, sort, display, theme, position, is_public, generated_by)
-    VALUES (@slug, @name, @description, @kind, @rules, @sort, @display, @theme, @position, @is_public, @generated_by)`).run({
+  const info = db.prepare(`INSERT INTO shelves (slug, name, description, kind, rules, sort, display, theme, position, is_public, generated_by, collection)
+    VALUES (@slug, @name, @description, @kind, @rules, @sort, @display, @theme, @position, @is_public, @generated_by, @collection)`).run({
+    collection: COLLECTIONS.includes(data.collection) ? data.collection : 'any',
     slug: data.slug || uniqueSlug(data.name || 'Shelf'),
     name: data.name || 'New shelf',
     description: data.description || null,
@@ -62,10 +65,11 @@ export function updateShelf(id, data) {
     display: data.display ?? cur.display,
     theme: JSON.stringify(data.theme ?? cur.theme),
     is_public: data.is_public === undefined ? (cur.is_public ? 1 : 0) : (data.is_public ? 1 : 0),
+    collection: COLLECTIONS.includes(data.collection) ? data.collection : cur.collection,
     slug: data.slug ? uniqueSlug(data.slug, id) : cur.slug,
   };
   getDb().prepare(`UPDATE shelves SET name=@name, description=@description, kind=@kind, rules=@rules, sort=@sort,
-    display=@display, theme=@theme, is_public=@is_public, slug=@slug, updated_at=datetime('now') WHERE id=@id`).run({ ...next, id });
+    display=@display, theme=@theme, is_public=@is_public, slug=@slug, collection=@collection, updated_at=datetime('now') WHERE id=@id`).run({ ...next, id });
 }
 
 export function deleteShelf(id) { getDb().prepare('DELETE FROM shelves WHERE id = ?').run(id); }
@@ -80,7 +84,7 @@ export function reorderShelves(ids) {
 export function shelfItems(shelf, { includeHidden = false } = {}) {
   const db = getDb();
   if (shelf.kind === 'smart') {
-    const books = withFiles(queryBooks(shelf.rules || {}, { sort: shelf.sort, includeHidden }));
+    const books = withFiles(queryBooks({ ...(shelf.rules || {}), collection: shelf.collection }, { sort: shelf.sort, includeHidden }));
     const items = [];
     let lastGroup;
     const groupBy = shelf.rules?.groupBy; // 'author' | 'series' | 'location' | undefined
@@ -101,7 +105,8 @@ export function shelfItems(shelf, { includeHidden = false } = {}) {
   const rows = db.prepare(`SELECT i.*, m.filename AS media_file, m.width AS media_w, m.height AS media_h, m.animated AS media_animated
     FROM shelf_items i LEFT JOIN media m ON m.id = i.media_id WHERE i.shelf_id = ? ORDER BY i.position, i.id`).all(shelf.id);
   const bookIds = rows.filter(r => r.kind === 'book').map(r => r.book_id);
-  const books = new Map(withFiles(queryBooks({ ids: bookIds }, { includeHidden })).map(b => [b.id, b]));
+  // Books that don't belong to this shelf's collection (e.g. an e-book-only title on a physical bookcase) are not shown.
+  const books = new Map(withFiles(queryBooks({ ids: bookIds, collection: shelf.collection }, { includeHidden })).map(b => [b.id, b]));
   const out = [];
   for (const r of rows) {
     if (r.kind === 'book') {
@@ -141,6 +146,11 @@ export function saveShelfItems(shelfId, items) {
 
 export function addBooksToShelf(shelfId, bookIds, display = 'inherit') {
   const db = getDb();
+  const shelf = getShelf(shelfId);
+  if (shelf && shelf.collection !== 'any') {
+    const ok = new Set(queryBooks({ ids: bookIds, collection: shelf.collection }, { includeHidden: true }).map(b => b.id));
+    bookIds = bookIds.filter(id => ok.has(Number(id)));
+  }
   const max = db.prepare('SELECT MAX(position) AS m FROM shelf_items WHERE shelf_id = ?').get(shelfId).m ?? -1;
   const existing = new Set(db.prepare("SELECT book_id FROM shelf_items WHERE shelf_id = ? AND kind = 'book'").all(shelfId).map(r => r.book_id));
   const ins = db.prepare("INSERT INTO shelf_items (shelf_id, position, kind, book_id, display) VALUES (?, ?, 'book', ?, ?)");
@@ -154,3 +164,15 @@ export function shelvesForBook(bookId) {
   return getDb().prepare(`SELECT DISTINCT s.slug, s.name FROM shelves s JOIN shelf_items i ON i.shelf_id = s.id
     WHERE i.book_id = ? AND s.is_public = 1 ORDER BY s.position`).all(bookId);
 }
+
+/** The first time any digital book exists, give it a home: a "Digital Library" smart bookcase. */
+export function ensureDigitalShelf() {
+  const db = getDb();
+  if (db.prepare("SELECT value FROM settings WHERE key = 'digitalShelfCreated'").get()) return null;
+  if (db.prepare("SELECT id FROM shelves WHERE collection = 'digital'").get()) { markDigital(db); return null; }
+  if (!queryBooks({ collection: 'digital' }, { limit: 1 }).length) return null;
+  const id = createShelf({ name: 'Digital Library', description: 'E-books, PDFs and audiobooks', kind: 'smart', sort: 'author', display: 'mixed', collection: 'digital', rules: {} });
+  markDigital(db);
+  return id;
+}
+function markDigital(db) { db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('digitalShelfCreated', 'true')").run(); }

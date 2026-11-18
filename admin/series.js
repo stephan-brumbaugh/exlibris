@@ -5,19 +5,20 @@ let list = await api('GET', '/series');
 const state = { q: '', only: '' };
 
 const minBooks = el('input', { type: 'number', min: 1, value: 3, style: { width: '70px' } });
+const coll = el('select', {}, el('option', { value: 'physical' }, 'my books at home'), el('option', { value: 'digital' }, 'my digital library'), el('option', { value: 'any' }, 'both'));
 root.append(el('section', { class: 'panel stack' },
   el('h2', {}, 'Series shelves'),
-  el('p', { class: 'muted' }, 'Smart shelves that keep each series together in reading order, and update themselves as books are added.'),
-  el('div', { class: 'row' }, 'For series with at least', minBooks, 'books:',
+  el('p', { class: 'muted' }, 'Smart shelves that keep each series together in reading order, and update themselves as books are added. Choose whether they show your physical books or your digital ones — the two never mix.'),
+  el('div', { class: 'row' }, 'Using', coll, ', for series with at least', minBooks, 'books:',
     el('button', { class: 'btn primary', onclick: guard(async () => {
-      const r = await api('POST', '/series/shelves', { mode: 'combined', minBooks: Number(minBooks.value) || 1 });
+      const r = await api('POST', '/series/shelves', { mode: 'combined', minBooks: Number(minBooks.value) || 1, collection: coll.value });
       location.href = `/admin/shelves/${r.created[0].id}`;
     }) }, 'One “Series” bookcase, each series on its own shelf'),
     el('button', { class: 'btn', onclick: guard(async () => {
-      const n = list.filter(s => s.count >= (Number(minBooks.value) || 1) && !s.shelf).length;
+      const n = list.filter(s => s.count >= (Number(minBooks.value) || 1) && !s.shelves.some(x => x.collection === coll.value)).length;
       if (!n) return toast('Every series that size already has its own bookcase');
-      if (!confirm(`Create ${n} bookcase(s), one per series?`)) return;
-      const r = await api('POST', '/series/shelves', { mode: 'each', minBooks: Number(minBooks.value) || 1 });
+      if (!confirm(`Create up to ${n} bookcase(s), one per series?`)) return;
+      const r = await api('POST', '/series/shelves', { mode: 'each', minBooks: Number(minBooks.value) || 1, collection: coll.value });
       toast(`Created ${r.created.length} bookcase(s)`); list = await api('GET', '/series'); draw();
     }) }, 'A separate bookcase for each series'))));
 
@@ -65,8 +66,11 @@ function draw() {
             if (!to || to === s.name) return;
             const r = await api('POST', '/series/rename', { from: s.name, to }); toast(`Updated ${r.changed} books`); list = await api('GET', '/series'); draw();
           }) }, 'Rename'),
-          s.shelf ? el('a', { class: 'btn small', href: `/admin/shelves/${s.shelf.id}` }, 'Shelf') : el('button', { class: 'btn small', onclick: guard(async () => {
-            const r = await api('POST', '/series/shelves', { mode: 'each', names: [s.name] }); location.href = `/admin/shelves/${r.created[0].id}`;
+          ...s.shelves.map(x => el('a', { class: 'btn small', href: `/admin/shelves/${x.id}`, title: 'Open this series bookcase' }, x.collection === 'physical' ? 'Home shelf' : x.collection === 'digital' ? 'Digital shelf' : 'Shelf')),
+          el('button', { class: 'btn small', title: 'Make a bookcase for this series, using the collection chosen at the top', onclick: guard(async () => {
+            const r = await api('POST', '/series/shelves', { mode: 'each', names: [s.name], collection: coll.value });
+            if (!r.created.length) return toast('That bookcase already exists');
+            location.href = `/admin/shelves/${r.created[0].id}`;
           }) }, 'Make shelf')));
     }))));
 }

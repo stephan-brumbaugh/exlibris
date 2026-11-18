@@ -284,7 +284,7 @@ export function buildCaseShelves(placed, cases, { rebuild }) {
       if (!rebuild) { out.push({ id, name, rebuilt: false }); continue; }
       updateShelf(id, { description });
     } else {
-      id = createShelf({ name, description, kind: 'manual', display: 'mixed', generated_by: gen });
+      id = createShelf({ name, description, kind: 'manual', display: 'mixed', generated_by: gen, collection: 'physical' });
     }
     saveShelfItems(id, items);
     out.push({ id, name, slug: getShelf(id).slug, books: list.length, rebuilt: true });
@@ -299,7 +299,7 @@ export function buildCaseShelves(placed, cases, { rebuild }) {
   // A single "whole house" smart shelf, grouped by shelf code.
   if (!getDb().prepare("SELECT id FROM shelves WHERE generated_by = 'import:all'").get()) {
     createShelf({ name: 'The Whole House', description: 'Every physical book, shelf by shelf', kind: 'smart', sort: 'location',
-      rules: { has: 'physical', groupBy: 'location' }, display: 'spine', generated_by: 'import:all' });
+      rules: { has: 'physical', groupBy: 'location' }, display: 'spine', generated_by: 'import:all', collection: 'physical' });
   }
   return out;
 }
