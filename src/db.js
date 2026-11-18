@@ -119,6 +119,29 @@ const MIGRATIONS = [
     UNIQUE(provider, external_id)
   );
   `,
+  // 2 — series colours, metadata attempts, physical reorganisation
+  `
+  ALTER TABLE books ADD COLUMN meta_checked_at TEXT;
+  ALTER TABLE books ADD COLUMN pages_source TEXT;
+  CREATE TABLE series_info (
+    name TEXT PRIMARY KEY COLLATE NOCASE,
+    color TEXT,
+    text_color TEXT
+  );
+  CREATE TABLE physical_shelves (
+    code TEXT PRIMARY KEY COLLATE NOCASE,
+    room TEXT,
+    note TEXT,
+    width_in REAL NOT NULL DEFAULT 30,
+    enabled INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE TABLE reorg_snapshot (
+    book_id INTEGER PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+    code TEXT,
+    pos INTEGER,
+    done INTEGER NOT NULL DEFAULT 0
+  );
+  `,
 ];
 
 export function openDb(file = config.dbFile) {

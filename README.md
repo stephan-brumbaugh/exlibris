@@ -64,6 +64,38 @@ Next, point `LIBRARY_DIRS` (the `/library` volume) at that folder and press **Sc
 
 You can re-import whenever the spreadsheet changes. Books are matched to their earlier rows, so positions update instead of duplicating. If a physical book has the same title and author as an e-book, the two become one entry: it shows where the book sits at home **and** offers the download.
 
+## Covers, page counts and spine sizes
+
+- **Automatic lookup.** New books (from an import, upload or scan) are looked up automatically on Open Library and Google Books, one at a time. The lookup fills in the cover, description and page count. Each book is tried once, and anything still missing is retried every few hours. You can turn this off in **Settings**.
+- **Page counts.** These come from the most commonly published **hardcover** edition. If there isn't one, the paperback is used, then Open Library's median across all editions. A page count you type yourself is never overwritten.
+- **Spine thickness** follows the page count: about 0.0028″ per page, plus the boards for a hardback.
+- **Series look like a set.** Every book in a series gets the same height, spine style and colour. You can choose each series' colour on the **Series** page, or take it from the first book's cover.
+
+## Series
+
+The **Series** page shows, for every series:
+
+- its spine colour
+- any numbers you don't have
+- every shelf at home it is currently spread across
+
+From there you can rename or merge series. You can also create series shelves: either one "Series" bookcase with each series on its own shelf, or a separate bookcase per series. These are smart shelves, so they stay up to date as books are added.
+
+## Reorganising the real shelves
+
+**Reorganise at home** plans a new physical layout:
+
+1. **Check your shelves.** Each shelf code from the import is listed. Widths start out sized to fit today's contents; measure the real ones for a better plan. Untick shelves that hold no books.
+2. **Choose how to order books.** The options are:
+   - by author
+   - all series first
+   - by title
+   - hardbacks first
+
+   You can also keep series from being split across shelves, give long series their own shelf, and set how full each shelf should be.
+3. **Preview, then Apply.** Applying rearranges the digital Bookcases to match the plan. You can still fine-tune it by dragging books in the builder, then use **Save as home locations** in its Settings tab.
+4. **Follow the printable lists.** The *take-off* list is grouped by where each book is now; the *put-away* list is grouped by where it's going. Tick books off as you move them, then press **Finish**. **Undo everything** restores the original layout.
+
 ## Audiobooks
 
 - **Audiobookshelf:** go to **Audio links**, enter the server address, an API token and (optionally) the library id, then click **Save & read catalogue**.
@@ -79,6 +111,8 @@ You can re-import whenever the spreadsheet changes. Books are matched to their e
 - **Keyboard:** **S** = spine out, **C** = cover out, **Enter** = start a new shelf after the selection, **Delete** = remove from the shelf.
 - **Decorations:** upload them on the **Decorations** page (transparent PNGs and animated GIFs look best), then click one in the builder to place it.
 - **Look:** the **Look** tab has ten bookcase styles. You can also change colours, shelf height, lighting and labels, put a picture behind the books, and set wallpaper around the case.
+- **Tidy up** (on the Add tab) sorts the books within each shelf (by author, series, title, colour, height or home location) without moving labels or pictures. It can also rebuild the whole bookcase with one labelled shelf per series or author.
+- **Move to another shelf / Copy to…** is on the Selected tab.
 - **Smart shelves** keep themselves up to date. Examples: every EPUB, everything with an audiobook link, or one author grouped by series. Use **Convert to hand-arranged** to freeze one and arrange it yourself.
 
 ## Development

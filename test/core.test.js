@@ -38,7 +38,10 @@ test('spine geometry is deterministic and series share a colour', () => {
   const a = { id: 1, title: 'A', series: 'Dirk Pitt', binding: 'Hardback' }, b = { id: 2, title: 'B', series: 'Dirk Pitt', binding: 'Paperback' };
   assert.deepEqual(books.spineGeometry(a), books.spineGeometry(a));
   assert.equal(books.spineColors(a).color, books.spineColors(b).color);
-  assert.ok(books.spineGeometry({ id: 3, title: 'C', pages: 1200 }).w <= 68);
+  assert.equal(books.spineGeometry(a).h, books.spineGeometry(b).h); // a series stands at one height
+  const thin = books.spineGeometry({ id: 3, title: 'C', pages: 150, binding: 'Hardback' }).w;
+  const thick = books.spineGeometry({ id: 4, title: 'D', pages: 900, binding: 'Hardback' }).w;
+  assert.ok(thick > thin * 3 && thick <= 80, `${thin} vs ${thick}`);
 });
 
 test('EPUB metadata, series and cover are read', async () => {
@@ -124,4 +127,47 @@ test('themes resolve with shelf overrides and coerce the frame flag', () => {
   const t2 = themes.resolveTheme({ preset: 'oak', wood: '#999999' }, { preset: 'ebony' });
   assert.equal(t2.wood, themes.PRESETS.ebony.wood);
   assert.match(themes.themeStyle(t), /--row-h:300px/);
+});
+
+test('series colours apply to every book in the series', async () => {
+  const series = await import('../src/series.js');
+  series.setSeriesColor('Discworld', '#112233');
+  const mort = getDb().prepare("SELECT * FROM books WHERE title = 'Mort'").get();
+  assert.equal(books.spineColors(mort).color, '#112233');
+  assert.equal(books.spineColors({ ...mort, spine_color: '#abcdef' }).color, '#abcdef');
+  const list = series.listSeries();
+  assert.ok(list.find(s => s.name === 'Discworld' && s.custom && s.count === 2));
+});
+
+test('reorganisation plan fits shelves, keeps series together, and can be undone', async () => {
+  const reorg = await import('../src/reorg.js');
+  // Two small shelves: B2 fits roughly two books.
+  reorg.updatePhysicalShelf('B2', { width_in: 3 });
+  reorg.updatePhysicalShelf('B10', { width_in: 30 });
+  reorg.updatePhysicalShelf('A3', { width_in: 30 });
+  const plan = reorg.makePlan({ order: 'author', fill: 1, bigSeries: 0 });
+  const where = Object.fromEntries(plan.placements.map(p => [`${p.title}|${p.from_code}`, p]));
+  // Discworld books stay together on one shelf
+  assert.equal(where['Mort|B2'].code, where['Guards! Guards!|B2'].code);
+  assert.ok(where['Mort|B2'].pos < where['Guards! Guards!|B2'].pos);
+  for (const s of plan.shelves) assert.ok(s.inches <= s.width + 3, `${s.code} overfull`);
+  const before = getDb().prepare('SELECT id, location, location_position FROM books ORDER BY id').all();
+  reorg.applyPlan(plan);
+  assert.ok(reorg.reorgActive());
+  assert.equal(reorg.moves().length, plan.moving);
+  reorg.cancelReorg();
+  assert.deepEqual(getDb().prepare('SELECT id, location, location_position FROM books ORDER BY id').all(), before);
+});
+
+test('a hand-arranged bookcase can be saved back as home locations', async () => {
+  const reorg = await import('../src/reorg.js');
+  const ids = getDb().prepare("SELECT id FROM books WHERE title IN ('Mort', 'Atlas') ORDER BY title").all().map(r => r.id);
+  const sid = shelves.createShelf({ name: 'Manual layout' });
+  shelves.saveShelfItems(sid, [{ kind: 'label', text: 'C4 · Top' }, { kind: 'book', book_id: ids[1] }, { kind: 'book', book_id: ids[0] }]);
+  const r = reorg.locationsFromShelf(sid);
+  assert.equal(r.books, 2);
+  const mort = books.getBook(ids[1]);
+  assert.equal(mort.location, 'C4'); assert.equal(mort.location_position, 1);
+  assert.equal(books.getBook(ids[0]).location_position, 2);
+  reorg.cancelReorg();
 });

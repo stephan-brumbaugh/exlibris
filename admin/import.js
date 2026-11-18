@@ -58,7 +58,7 @@ function showOptions(info) {
         out.replaceChildren(el('section', { class: 'panel stack' }, el('h2', {}, '3 · Done'),
           el('p', {}, `${r.created} new books, ${r.updated} updated, ${r.merged} matched to existing e-books, ${r.skipped} skipped.`),
           r.shelves.length ? el('ul', {}, ...r.shelves.map(s => el('li', {}, el('a', { href: `/admin/shelves/${s.id}` }, s.name), s.books ? ` — ${s.books} books` : '', s.rebuilt === false ? ' (left as it was)' : ''))) : null,
-          el('p', { class: 'muted' }, 'Physical books start with generated spines in a colour picked per series. To add real covers and descriptions, run “Fetch missing covers & details” on the dashboard (it works through them slowly and politely).'),
+          el('p', { class: 'muted' }, r.job ? 'Covers, descriptions and page counts are now being looked up in the background — progress shows on the Dashboard. It takes a while (a few seconds per book), and the shelves fill in as it goes.' : 'Books in a series share a spine colour — pick the colours on the Series page.'),
           el('div', { class: 'row' }, el('a', { class: 'btn primary', href: '/admin' }, 'Go to dashboard'), el('a', { class: 'btn', href: '/', target: '_blank' }, 'See the library ↗'))));
         toast('Import finished');
       } finally { e.target.disabled = false; e.target.textContent = 'Import'; }

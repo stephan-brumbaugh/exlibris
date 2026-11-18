@@ -173,7 +173,7 @@ function render() {
           (() => { const l = input('audible_url', 'Audible link', { wide: true, type: 'url' }); l.append(el('a', { class: 'small', href: '#', onclick: e => { e.preventDefault(); window.open(audibleSearch(), '_blank', 'noopener'); } }, 'Search Audible for this title ↗')); return l; })(),
           el('div', { class: 'wide' }, el('h3', {}, 'Other links'), links))),
         el('section', { class: 'panel' }, el('h2', {}, 'Spine'), el('div', { class: 'form-grid' },
-          colorPair('spine_color', 'Spine colour'), colorPair('spine_text_color', 'Lettering colour'),
+          colorPair('spine_color', 'Spine colour (auto = series colour)'), colorPair('spine_text_color', 'Lettering colour'),
           el('label', {}, 'Custom spine image', el('div', { class: 'row' }, el('button', { class: 'btn small', onclick: pickSpineImage }, 'Choose…'), spineImgText), F.spine_image))),
         filesPanel(),
         el('section', { class: 'panel' }, el('h2', {}, 'Private'), el('div', { class: 'form-grid' },

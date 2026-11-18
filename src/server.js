@@ -9,6 +9,7 @@ import { adminRouter } from './routes/admin.js';
 import { publicPage } from './views.js';
 import { startJob } from './jobs.js';
 import { scanLibrary } from './ingest.js';
+import { queueAutoEnrich } from './auto.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,6 +41,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`Ex Libris listening on http://${config.host}:${config.port}`);
     console.log(`Data: ${config.dataDir}  Library folders: ${config.libraryDirs.join(', ')}`);
   });
-  if (config.scanOnStart) setTimeout(() => startJob('scan', 'Scan library folders (startup)', j => scanLibrary(j)), 2000);
-  if (config.scanIntervalMinutes > 0) setInterval(() => startJob('scan', 'Scheduled library scan', j => scanLibrary(j)), config.scanIntervalMinutes * 60e3);
+  const scanThenEnrich = label => startJob('scan', label, async j => { const r = await scanLibrary(j); setTimeout(() => queueAutoEnrich('library scan'), 1000); return r; });
+  if (config.scanOnStart) setTimeout(() => scanThenEnrich('Scan library folders (startup)'), 2000);
+  else setTimeout(() => queueAutoEnrich('startup'), 5000);
+  if (config.scanIntervalMinutes > 0) setInterval(() => scanThenEnrich('Scheduled library scan'), config.scanIntervalMinutes * 60e3);
+  setInterval(() => queueAutoEnrich('scheduled'), 6 * 3600e3);
 }

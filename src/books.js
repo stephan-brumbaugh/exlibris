@@ -4,7 +4,7 @@ import { sortTitle, authorSort, clothColor, readableTextOn, hashString, matchKey
 export const BOOK_FIELDS = ['title', 'subtitle', 'authors', 'series', 'series_index', 'description', 'publisher', 'published',
   'isbn', 'language', 'pages', 'tags', 'binding', 'room', 'location', 'location_position', 'cover', 'cover_color',
   'spine_color', 'spine_text_color', 'spine_image', 'abs_url', 'abs_id', 'plex_url', 'plex_key', 'audible_url',
-  'other_links', 'notes', 'hidden', 'source', 'source_key'];
+  'other_links', 'notes', 'hidden', 'source', 'source_key', 'meta_checked_at', 'pages_source'];
 
 const NUMERIC = new Set(['series_index', 'pages', 'location_position', 'spine_image', 'hidden']);
 
@@ -47,26 +47,64 @@ export function bookFiles(id) {
   return getDb().prepare('SELECT * FROM book_files WHERE book_id = ? ORDER BY format').all(id);
 }
 
-/** Deterministic spine geometry, in px at a 240px reference row. */
-export function spineGeometry(b) {
-  const h = hashString(`${b.id}:${b.title}`);
-  const r1 = (h % 1000) / 1000, r2 = ((h >> 10) % 1000) / 1000;
+/**
+ * Estimated physical thickness in inches. Paper is ~0.0028"/page for a typical trade/hardback
+ * edition; boards add ~0.25" to a hardback, a paper cover ~0.06".
+ */
+export function thicknessInches(b) {
   const binding = (b.binding || '').toLowerCase();
-  let thick;
-  if (b.pages > 0) thick = Math.max(14, Math.min(68, 8 + b.pages * 0.07));
-  else if (binding.startsWith('hard')) thick = 26 + r1 * 20;
-  else if (binding.startsWith('paper')) thick = 17 + r1 * 16;
-  else thick = 20 + r1 * 18;
-  let height;
-  if (binding.startsWith('hard')) height = 0.82 + r2 * 0.14;
-  else if (binding.startsWith('paper')) height = 0.68 + r2 * 0.12;
-  else height = 0.74 + r2 * 0.18;
-  return { w: Math.round(thick), h: Math.round(height * 1000) / 1000, style: binding.startsWith('hard') ? 'hard' : binding.startsWith('paper') ? 'paper' : 'plain', v: h % 4 };
+  const hard = binding.startsWith('hard');
+  if (b.pages > 0) return Math.round((b.pages * 0.0028 + (hard ? 0.25 : 0.06)) * 100) / 100;
+  const r = (hashString(`${b.id}:${b.title}`) % 1000) / 1000;
+  if (hard) return 1.0 + r * 0.6;
+  if (binding.startsWith('paper')) return 0.65 + r * 0.5;
+  return 0.8 + r * 0.5;
 }
 
+const PX_PER_INCH = 21; // at the 250px reference shelf, a ~9" book is ~190px tall
+
+/**
+ * Deterministic spine geometry, in px at a 250px reference row.
+ * Width follows the page count. Books in a series share a height and spine style so they read as a set.
+ */
+export function spineGeometry(b) {
+  const own = hashString(`${b.id}:${b.title}`);
+  const set = b.series ? hashString(`series:${String(b.series).toLowerCase().trim()}`) : own;
+  const r2 = ((set >> 10) % 1000) / 1000;
+  const binding = (b.binding || '').toLowerCase();
+  const w = Math.max(10, Math.min(80, Math.round(thicknessInches(b) * PX_PER_INCH)));
+  let height;
+  if (b.series) height = 0.76 + r2 * 0.18;
+  else if (binding.startsWith('hard')) height = 0.82 + r2 * 0.14;
+  else if (binding.startsWith('paper')) height = 0.68 + r2 * 0.12;
+  else height = 0.74 + r2 * 0.18;
+  return { w, h: Math.round(height * 1000) / 1000, style: binding.startsWith('hard') ? 'hard' : binding.startsWith('paper') ? 'paper' : 'plain', v: set % 4 };
+}
+
+// Series colours chosen in the admin, cached until changed.
+let seriesCache = null;
+export function seriesColorMap() {
+  if (!seriesCache) {
+    seriesCache = new Map(getDb().prepare('SELECT name, color, text_color FROM series_info').all()
+      .map(r => [r.name.toLowerCase().trim(), r]));
+  }
+  return seriesCache;
+}
+export function invalidateSeriesColors() { seriesCache = null; }
+
+/** Default colour a series gets when none has been chosen. */
+export function defaultSeriesColor(name) { return clothColor(name); }
+
+/** Spine colour: the book's own override, then its series colour (so a series always matches), then its cover. */
 export function spineColors(b) {
-  const color = b.spine_color || b.cover_color || clothColor(b.series || b.title);
-  return { color, text: b.spine_text_color || readableTextOn(color) };
+  let color = b.spine_color, text = b.spine_text_color;
+  if (!color && b.series) {
+    const s = seriesColorMap().get(String(b.series).toLowerCase().trim());
+    color = s?.color || defaultSeriesColor(b.series);
+    text = text || s?.text_color;
+  }
+  color = color || b.cover_color || clothColor(b.title);
+  return { color, text: text || readableTextOn(color) };
 }
 
 function linksFor(b) {
@@ -126,6 +164,12 @@ export function queryBooks(rules = {}, { sort = 'author', includeHidden = false,
   }
   if (rules.author) { where.push('authors LIKE @author'); args.author = `%${rules.author}%`; }
   if (rules.series) { where.push('series LIKE @series'); args.series = `%${rules.series}%`; }
+  if (rules.seriesExact) { where.push('series = @seriesExact COLLATE NOCASE'); args.seriesExact = String(rules.seriesExact).trim(); }
+  if (rules.inSeries) where.push("COALESCE(series, '') <> ''");
+  if (Number(rules.minSeries) > 1) {
+    where.push("(SELECT COUNT(*) FROM books s2 WHERE s2.series = books.series COLLATE NOCASE AND s2.hidden = 0) >= @minSeries");
+    args.minSeries = Number(rules.minSeries);
+  }
   if (rules.tag) { where.push("(',' || REPLACE(tags, ', ', ',') || ',') LIKE @tag"); args.tag = `%,${rules.tag},%`; }
   if (rules.room) { where.push('room = @room'); args.room = rules.room; }
   if (rules.location) { where.push('location LIKE @loc'); args.loc = `${rules.location}%`; }

@@ -203,13 +203,55 @@ export function runImport(buffer, filename, opts = {}) {
       placed.push({ bookId, code: data.location, pos: data.location_position, order: idx });
     });
 
+    const known = new Set(getDb().prepare('SELECT code FROM physical_shelves').all().map(r => r.code.toLowerCase()));
+    rememberPhysicalShelves(placed.map(p => p.code), cases);
+    // New shelves start "unmeasured" (width 0) so the reorganiser sizes them from their current contents.
+    const unmeasured = getDb().prepare('UPDATE physical_shelves SET width_in = 0 WHERE code = ? COLLATE NOCASE');
+    for (const c of new Set(placed.map(p => p.code).filter(Boolean))) if (!known.has(String(c).toLowerCase())) unmeasured.run(c);
     if (opts.buildShelves !== false) result.shelves = buildCaseShelves(placed, cases, { rebuild: opts.rebuildShelves !== false });
   });
   tx();
   return result;
 }
 
-function buildCaseShelves(placed, cases, { rebuild }) {
+/** Record every shelf code (with its room and note) so the reorganiser knows the physical shelves. */
+export function rememberPhysicalShelves(codes, cases = {}) {
+  const st = getDb().prepare(`INSERT INTO physical_shelves (code, room, note) VALUES (?, ?, ?)
+    ON CONFLICT(code) DO UPDATE SET room = COALESCE(excluded.room, physical_shelves.room), note = COALESCE(excluded.note, physical_shelves.note)`);
+  for (const code of new Set(codes)) {
+    if (!code || /^loose$/i.test(code)) continue;
+    st.run(code, cases[code]?.room || null, cases[code]?.note || null);
+  }
+}
+
+/** Shelf code -> { room, note } from the physical_shelves table. */
+export function casesFromDb() {
+  const db = getDb();
+  // Fill in rooms and notes that pre-date the physical_shelves table: rooms from the books, notes from bookcase labels.
+  db.prepare(`UPDATE physical_shelves SET room = (SELECT b.room FROM books b WHERE b.location = physical_shelves.code COLLATE NOCASE AND COALESCE(b.room,'') <> '' LIMIT 1)
+    WHERE COALESCE(room, '') = ''`).run();
+  const setNote = db.prepare("UPDATE physical_shelves SET note = ? WHERE code = ? COLLATE NOCASE AND COALESCE(note, '') = ''");
+  for (const l of db.prepare("SELECT i.text FROM shelf_items i JOIN shelves s ON s.id = i.shelf_id WHERE s.generated_by LIKE 'import:%' AND i.kind = 'label'").all()) {
+    const m = String(l.text || '').match(/^([A-Za-z]{1,3}\d{1,3})\s+·\s+(.+)$/);
+    if (m) setNote.run(m[2].trim(), m[1]);
+  }
+  const out = {};
+  for (const r of getDb().prepare('SELECT * FROM physical_shelves').all()) out[r.code] = { room: r.room, note: r.note };
+  return out;
+}
+
+/** Rebuild the "Bookcase X" shelves from where books are recorded at home, keeping per-book spine/cover choices. */
+export function rebuildCaseShelvesFromDb() {
+  rememberPhysicalShelves(getDb().prepare("SELECT DISTINCT location FROM books WHERE COALESCE(location,'') <> ''").all().map(r => r.location), {});
+  const books = getDb().prepare("SELECT id, location, location_position FROM books WHERE COALESCE(location, '') <> ''").all();
+  return buildCaseShelves(books.map((b, i) => ({ bookId: b.id, code: b.location, pos: b.location_position, order: i })), casesFromDb(), { rebuild: true });
+}
+
+export function buildCaseShelves(placed, cases, { rebuild }) {
+  const db = getDb();
+  // Remember spine/cover choices made on the old bookcases so a rebuild doesn't undo them.
+  const display = new Map(db.prepare(`SELECT i.book_id, i.display FROM shelf_items i JOIN shelves s ON s.id = i.shelf_id
+    WHERE s.generated_by LIKE 'import:%' AND i.kind = 'book' AND i.display <> 'inherit'`).all().map(r => [r.book_id, r.display]));
   const groups = new Map();
   for (const p of placed) {
     const g = p.code ? caseOf(p.code) : 'Unshelved';
@@ -232,7 +274,7 @@ function buildCaseShelves(placed, cases, { rebuild }) {
         if (p.code && letter !== 'Loose') items.push({ kind: 'label', text: note ? `${p.code} · ${note}` : p.code });
         last = p.code;
       }
-      items.push({ kind: 'book', book_id: p.bookId, display: 'inherit' });
+      items.push({ kind: 'book', book_id: p.bookId, display: display.get(p.bookId) || 'inherit' });
     }
     const gen = `import:${letter}`;
     const existing = getDb().prepare('SELECT id FROM shelves WHERE generated_by = ?').get(gen);
@@ -246,6 +288,13 @@ function buildCaseShelves(placed, cases, { rebuild }) {
     }
     saveShelfItems(id, items);
     out.push({ id, name, slug: getShelf(id).slug, books: list.length, rebuilt: true });
+  }
+  // Bookcases that no longer have any books (everything moved out) are emptied rather than left stale.
+  if (rebuild) {
+    const used = new Set(letters.map(l => `import:${l}`));
+    for (const s of db.prepare("SELECT id, generated_by FROM shelves WHERE generated_by LIKE 'import:%' AND generated_by <> 'import:all'").all()) {
+      if (!used.has(s.generated_by)) saveShelfItems(s.id, []);
+    }
   }
   // A single "whole house" smart shelf, grouped by shelf code.
   if (!getDb().prepare("SELECT id FROM shelves WHERE generated_by = 'import:all'").get()) {

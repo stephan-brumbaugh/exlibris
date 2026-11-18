@@ -67,9 +67,37 @@ async function workDescription(workKey) {
  * Fill blank fields on a book from the best candidate. Never overwrites existing values unless replaceCover is set.
  * Returns { applied: string[], candidate } or { applied: [] } when nothing confident was found.
  */
+/**
+ * Page count of the most commonly published hardcover edition of a work, falling back to paperback,
+ * then to Open Library's median across all editions.
+ */
+export async function editionPages(workKey, fallbackMedian = null) {
+  if (workKey) {
+    try {
+      const data = await getJson(`https://openlibrary.org${workKey}/editions.json?limit=300`);
+      const eds = (data.entries || []).filter(e => Number(e.number_of_pages) > 20);
+      const mode = list => {
+        if (!list.length) return null;
+        // Group page counts within ~3% of each other so 352 and 355 count as the same printing.
+        const counts = new Map();
+        for (const e of list) { const k = Math.round(Number(e.number_of_pages) / 8) * 8; counts.set(k, [...(counts.get(k) || []), Number(e.number_of_pages)]); }
+        const best = [...counts.values()].sort((a, b) => b.length - a.length || b[0] - a[0])[0];
+        return best.sort((a, b) => a - b)[Math.floor(best.length / 2)];
+      };
+      const fmt = e => String(e.physical_format || '').toLowerCase();
+      const hard = mode(eds.filter(e => /hard|cloth|library binding/.test(fmt(e))));
+      if (hard) return { pages: hard, source: 'hardcover' };
+      const paper = mode(eds.filter(e => /paper|mass market|soft/.test(fmt(e))));
+      if (paper) return { pages: paper, source: 'paperback' };
+    } catch (e) { console.warn('editions lookup failed:', e.message); }
+  }
+  return fallbackMedian ? { pages: fallbackMedian, source: 'median' } : null;
+}
+
 export async function enrichBook(id, { replaceCover = false, minScore = 0.8 } = {}) {
   const b = getBook(id);
   if (!b) return { applied: [] };
+  updateBook(id, { meta_checked_at: new Date().toISOString() });
   const cands = await searchCandidates({ title: b.title, authors: b.authors, isbn: b.isbn });
   const best = cands.find(c => c.score >= minScore);
   if (!best) return { applied: [], reason: cands.length ? 'no confident match' : 'no results' };
@@ -81,7 +109,10 @@ export async function applyCandidate(id, c, { replaceCover = false, onlyBlank = 
   const fill = {}, applied = [];
   const set = (k, v) => { if (v === undefined || v === null || v === '') return; if (onlyBlank && b[k] !== null && b[k] !== '' && b[k] !== undefined) return; fill[k] = v; applied.push(k); };
   if (!b.authors) set('authors', c.authors);
-  set('pages', c.pages);
+  if (!b.pages || !onlyBlank) {
+    const ep = c.source === 'openlibrary' ? await editionPages(c.workKey, c.pages) : (c.pages ? { pages: c.pages, source: 'google' } : null);
+    if (ep) { fill.pages = ep.pages; fill.pages_source = ep.source; applied.push(`pages (${ep.source})`); }
+  }
   set('isbn', c.isbn);
   set('publisher', c.publisher);
   set('published', c.published || (c.year ? String(c.year) : null));
@@ -118,6 +149,10 @@ export async function enrichMany(ids, job, opts = {}) {
   return res;
 }
 
-export function booksNeedingMetadata() {
-  return queryBooks({}, { includeHidden: true }).filter(b => !b.cover || !b.description).map(b => b.id);
+/** Books missing a cover, description or page count. `uncheckedOnly` skips books already looked up once. */
+export function booksNeedingMetadata({ uncheckedOnly = false } = {}) {
+  return queryBooks({}, { includeHidden: true })
+    .filter(b => !b.cover || !b.description || !b.pages)
+    .filter(b => !uncheckedOnly || !b.meta_checked_at)
+    .map(b => b.id);
 }

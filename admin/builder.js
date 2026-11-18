@@ -1,5 +1,5 @@
 import { api, el, guard, toast, pageData, debounce, app, fmtIndex } from './common.js';
-import { renderItem } from '/js/shelf-render.js';
+import { renderItem, surname } from '/js/shelf-render.js';
 import { resolveTheme, themeStyle, themeClasses, PRESETS } from '/js/themes.js';
 import Sortable from '/vendor/sortable.js';
 
@@ -26,6 +26,10 @@ const saveItems = debounce(guard(async () => {
     setState('All changes saved');
   } finally { pending--; }
 }), 600);
+async function saveNow() {
+  await api('PUT', `/shelves/${shelfId}/items`, { items: items.map(i => ({ kind: i.kind, book_id: i.book_id, media_id: i.media_id, display: i.display, size: i.size, text: i.text, link: i.link })) });
+  setState('All changes saved');
+}
 const saveShelf = debounce(guard(async patch => {
   setState('Saving…', true);
   const r = await api('PATCH', `/shelves/${shelfId}`, patch);
@@ -135,6 +139,92 @@ function setDisplay(d) {
   items.forEach(i => { if (selected.has(i.key) && i.kind === 'book') i.display = d; }); changed(); drawStage(); drawInspector();
 }
 
+/* ───────── Sorting ───────── */
+function hue(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || ''); if (!m) return [999, 0];
+  const n = parseInt(m[1], 16); const r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2;
+  if (d < 0.08) return [400 + (1 - l) * 100, l]; // greys and near-whites go to the end, light to dark
+  let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [(h * 60 + 360) % 360, l];
+}
+const codeCmp = (a, b) => String(a || '~').localeCompare(String(b || '~'), undefined, { numeric: true });
+const SORTERS = {
+  author: (a, b) => surname(a.authors || '~').localeCompare(surname(b.authors || '~')) || (a.authors || '').localeCompare(b.authors || '') || (a.series || '~').localeCompare(b.series || '~') || (a.series_index ?? 1e9) - (b.series_index ?? 1e9) || a.title.localeCompare(b.title),
+  series: (a, b) => (a.series ? 0 : 1) - (b.series ? 0 : 1) || (a.series || '').localeCompare(b.series || '') || (a.series_index ?? 1e9) - (b.series_index ?? 1e9) || SORTERS.author(a, b),
+  title: (a, b) => a.title.replace(/^(the|a|an)\s+/i, '').localeCompare(b.title.replace(/^(the|a|an)\s+/i, '')),
+  colour: (a, b) => { const [ha, la] = hue(a.spine?.color), [hb, lb] = hue(b.spine?.color); return Math.floor(ha / 12) - Math.floor(hb / 12) || lb - la || SORTERS.series(a, b); },
+  height: (a, b) => (b.spine?.h || 0) - (a.spine?.h || 0) || SORTERS.series(a, b),
+  location: (a, b) => codeCmp(a.location, b.location) || (a.location_position ?? 1e9) - (b.location_position ?? 1e9),
+};
+const SORT_LABELS = [['author', 'Author, then series order'], ['series', 'Series, then everything else by author'], ['title', 'Title'], ['colour', 'Colour (rainbow)'], ['height', 'Height, tallest first'], ['location', 'Where it sits at home']];
+
+/** Sort books inside each shelf section; labels, breaks and decorations stay exactly where they are. */
+function sortWithinSections(key) {
+  const out = []; let seg = [];
+  const flush = () => {
+    const books = seg.filter(i => i.kind === 'book').sort((a, b) => SORTERS[key](a.book, b.book));
+    let j = 0; for (const it of seg) out.push(it.kind === 'book' ? books[j++] : it);
+    seg = [];
+  };
+  for (const it of items) { if (it.kind === 'break') { flush(); out.push(it); } else seg.push(it); }
+  flush();
+  items = out;
+}
+
+/** Throw away breaks and labels, sort everything, and start a labelled shelf for each series or author. */
+function regroup(by) {
+  const books = items.filter(i => i.kind === 'book').sort((a, b) => SORTERS[by === 'series' ? 'series' : 'author'](a.book, b.book));
+  const decor = items.filter(i => i.kind === 'decor');
+  const out = []; let last;
+  for (const it of books) {
+    const g = by === 'series' ? (it.book.series || 'Other books') : (surname(it.book.authors) ? (it.book.authors || '').split(/;|&/)[0].trim() : 'Unknown author');
+    if (g !== last) {
+      if (out.length) out.push({ kind: 'break', key: `k${++seq}` });
+      out.push({ kind: 'label', text: g, size: 'plaque', key: `k${++seq}` });
+      last = g;
+    }
+    out.push(it);
+  }
+  items = [...out, ...decor];
+}
+
+function tidyPanel() {
+  const by = el('select', {}, ...SORT_LABELS.map(([v, l]) => el('option', { value: v }, l)));
+  const group = el('select', {}, el('option', { value: 'series' }, 'each series'), el('option', { value: 'author' }, 'each author'));
+  return el('div', { class: 'panel stack' }, el('h2', {}, 'Tidy up'),
+    el('label', {}, 'Sort books', by),
+    el('div', { class: 'row' },
+      el('button', { class: 'btn', onclick: () => { sortWithinSections(by.value); changed(); drawStage(); toast('Sorted within each shelf'); } }, 'Sort within each shelf'),
+      el('button', { class: 'btn', onclick: () => {
+        if (!confirm('Sort every book on this bookcase, ignoring the current shelf breaks? (Labels and breaks are kept but books flow past them.)')) return;
+        const books = items.filter(i => i.kind === 'book').sort((a, b) => SORTERS[by.value](a.book, b.book));
+        let j = 0; items = items.map(i => (i.kind === 'book' ? books[j++] : i)); changed(); drawStage();
+      } }, 'Sort the whole bookcase')),
+    el('p', { class: 'small muted' }, '“Within each shelf” keeps your labels, breaks and pictures where they are and only reorders the books between them.'),
+    el('div', { class: 'row' }, 'Give', group, 'its own labelled shelf',
+      el('button', { class: 'btn', onclick: () => {
+        if (!confirm('Rebuild this bookcase so every group starts a new labelled shelf? Existing labels and breaks are replaced; pictures move to the end.')) return;
+        regroup(group.value); selected.clear(); changed(); drawStage(); drawInspector();
+      } }, 'Rebuild')));
+}
+
+let allShelves = null;
+async function moveSelection(copy) {
+  allShelves = allShelves || (await api('GET', '/shelves')).filter(s => s.kind === 'manual' && s.id !== shelfId);
+  const books = items.filter(i => selected.has(i.key) && i.kind === 'book');
+  if (!books.length) return toast('Select some books first', true);
+  const dlg = el('dialog', { style: { width: 'min(420px, 92vw)' } },
+    el('h2', {}, `${copy ? 'Copy' : 'Move'} ${books.length} book(s) to…`),
+    el('div', { class: 'stack' }, ...allShelves.map(s => el('button', { class: 'btn', onclick: guard(async () => {
+      const r = await api('POST', `/shelves/${s.id}/books`, { ids: books.map(b => b.book_id) });
+      if (!copy) { items = items.filter(i => !(selected.has(i.key) && i.kind === 'book')); selected.clear(); changed(); drawStage(); drawInspector(); }
+      toast(`${r.added} added to ${s.name}${r.added < books.length ? ` (${books.length - r.added} were already there)` : ''}`); dlg.close();
+    }) }, s.name))),
+    el('div', { class: 'row end', style: { marginTop: '12px' } }, el('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel')));
+  document.body.append(dlg); dlg.showModal(); dlg.addEventListener('close', () => dlg.remove());
+}
+
 /* ───────── Inspector ───────── */
 const inspector = el('aside', { class: 'inspector' });
 const onShelf = () => new Set(items.filter(i => i.kind === 'book').map(i => i.book_id));
@@ -193,6 +283,7 @@ function addTab() {
     el('div', { class: 'panel stack' }, el('h2', {}, 'Decorations'),
       media.length ? decor : el('p', { class: 'muted small' }, 'No images yet.'),
       el('a', { class: 'small', href: '/admin/media', target: '_blank' }, 'Upload pictures & GIFs ↗')),
+    tidyPanel(),
   );
   return box;
 }
@@ -237,6 +328,9 @@ function selectedTab() {
   box.append(el('div', { class: 'row' },
     el('button', { class: 'btn', onclick: () => insert([{ kind: 'break' }]) }, '↵ New shelf after'),
     el('button', { class: 'btn danger', onclick: removeSelected }, 'Remove from shelf')));
+  if (books.length) box.append(el('div', { class: 'row' },
+    el('button', { class: 'btn', onclick: guard(() => moveSelection(false)) }, 'Move to another shelf…'),
+    el('button', { class: 'btn', onclick: guard(() => moveSelection(true)) }, 'Copy to…')));
   if (books.length > 1) {
     box.append(el('button', { class: 'btn', onclick: () => {
       const order = { author: (a, b) => (a.book.authors || '').localeCompare(b.book.authors || '') || (a.book.series || '').localeCompare(b.book.series || '') || (a.book.series_index || 0) - (b.book.series_index || 0) };
@@ -315,6 +409,16 @@ function settingsTab() {
       el('label', {}, 'Web address', el('div', { class: 'row small' }, '/shelf/', slug)),
       el('label', { class: 'inline' }, pub, 'Visible on the public site'),
       el('div', { class: 'row' }, el('a', { class: 'btn small', href: `/shelf/${shelf.slug}`, target: '_blank' }, 'View on site ↗'))));
+  if (manual() && items.some(i => i.kind === 'label' && /^([A-Za-z]{1,3}\d{1,3}|Loose)\b/i.test(i.text || ''))) {
+    panel.append(el('div', { class: 'panel stack' }, el('h2', {}, 'Home shelf locations'),
+      el('p', { class: 'small muted' }, 'This bookcase has shelf-code labels (like “B3”). If you rearranged it to match how you want the real shelves, save the new order as each book’s home location. You’ll get a move list on the Reorganise page.'),
+      el('button', { class: 'btn primary', onclick: guard(async () => {
+        await saveNow();
+        const r = await api('POST', `/shelves/${shelfId}/save-locations`);
+        toast(`${r.changed} book location(s) updated${r.skipped ? ` — ${r.skipped} before the first label were left alone` : ''}`);
+      }) }, 'Save as home locations'),
+      el('a', { class: 'small', href: '/admin/reorganise' }, 'Open the move list →')));
+  }
   if (!manual()) {
     const r = { ...(shelf.rules || {}) };
     const rule = (k, label, ph) => el('label', {}, label, el('input', { value: r[k] || '', placeholder: ph, oninput: debounce(async e => { r[k] = e.target.value || undefined; await refreshSmart(r); }, 500) }));

@@ -15,6 +15,10 @@ import { searchCandidates, applyCandidate, enrichMany, booksNeedingMetadata } fr
 import { startJob, getJob, listJobs, cancelJob } from '../jobs.js';
 import { inspect as inspectSheet, runImport } from '../importer.js';
 import { refreshCandidates, listCandidates, applyCandidates } from '../integrations.js';
+import { queueAutoEnrich, autoMetadataEnabled } from '../auto.js';
+import { listSeries, setSeriesColor, renameSeries, createSeriesShelves } from '../series.js';
+import * as reorg from '../reorg.js';
+import { rebuildCaseShelvesFromDb } from '../importer.js';
 import { PRESETS, FONTS } from '../../public/js/themes.js';
 import { safeFilename, token } from '../util.js';
 
@@ -71,6 +75,9 @@ adminRouter.get('/add', page('Add books', 'add', 'add.js', undefined, () => ({ l
 adminRouter.get('/media', page('Decorations', 'media', 'media.js'));
 adminRouter.get('/import', page('Import a spreadsheet', 'import', 'import.js'));
 adminRouter.get('/integrations', page('Audiobook links', 'integrations', 'integrations.js'));
+adminRouter.get('/series', page('Series', 'series', 'series.js'));
+adminRouter.get('/reorganise', page('Reorganise your shelves', 'reorg', 'reorganise.js'));
+adminRouter.get('/reorganise/print', (req, res) => res.send(printMoves(req.query.by === 'source' ? 'source' : 'dest')));
 adminRouter.get('/settings', page('Settings', 'settings', 'settings.js', undefined, () => ({ presets: PRESETS, fonts: Object.keys(FONTS) })));
 
 // ───────────── API ─────────────
@@ -147,6 +154,8 @@ api.patch('/books/:id', (req, res) => {
   if (!getBook(id)) return res.status(404).json({ error: 'Not found' });
   const body = { ...req.body };
   delete body.cover; delete body.source_key; delete body.source;
+  const before = getBook(id);
+  if (body.pages !== undefined && String(body.pages) !== String(before.pages ?? '')) body.pages_source = body.pages ? 'manual' : null;
   updateBook(id, body);
   res.json({ ok: true, book: getBook(id) });
 });
@@ -286,10 +295,11 @@ api.post('/upload', upload.array('files'), asyncH(async (req, res) => {
   }
   const shelfId = Number(req.body.shelfId);
   if (shelfId) addBooksToShelf(shelfId, out.filter(o => o.bookId).map(o => o.bookId));
+  queueAutoEnrich('upload');
   res.json({ results: out });
 }));
 
-api.post('/scan', (req, res) => res.json({ job: startJob('scan', 'Scan library folders', j => scanLibrary(j)) }));
+api.post('/scan', (req, res) => res.json({ job: startJob('scan', 'Scan library folders', async j => { const r = await scanLibrary(j); setTimeout(() => queueAutoEnrich('library scan'), 500); return r; }) }));
 api.post('/enrich-missing', (req, res) => {
   const ids = booksNeedingMetadata();
   res.json({ job: startJob('enrich', `Fetch covers & details for ${ids.length} books`, j => enrichMany(ids, j, {})) });
@@ -383,7 +393,11 @@ api.post('/import/inspect', upload.single('file'), (req, res) => {
 api.post('/import/run', (req, res) => {
   const p = pendingImports.get(req.body.key);
   if (!p) return res.status(400).json({ error: 'That upload has expired — choose the file again.' });
-  try { res.json(runImport(p.buf, p.name, req.body.options || {})); }
+  try {
+    const result = runImport(p.buf, p.name, req.body.options || {});
+    result.job = queueAutoEnrich('spreadsheet import');
+    res.json(result);
+  }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
@@ -410,11 +424,52 @@ api.post('/integrations/:provider/refresh', (req, res) => {
 api.get('/integrations/:provider/candidates', (req, res) => res.json(listCandidates(req.params.provider, req.query.status || 'pending')));
 api.post('/integrations/:provider/apply', asyncH(async (req, res) => res.json(await applyCandidates(req.params.provider, req.body.actions || []))));
 
+// Series
+api.get('/series', (req, res) => res.json(listSeries()));
+api.put('/series', (req, res) => {
+  const { name, color, text_color } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name required' });
+  setSeriesColor(String(name), color, text_color);
+  res.json({ ok: true });
+});
+api.post('/series/rename', (req, res) => {
+  const { from, to } = req.body || {};
+  if (!from || !String(to || '').trim()) return res.status(400).json({ error: 'Both names are required' });
+  res.json({ changed: renameSeries(String(from), String(to)) });
+});
+api.post('/series/shelves', (req, res) => res.json({ created: createSeriesShelves(req.body || {}) }));
+
+// Physical reorganisation
+api.get('/reorg', (req, res) => res.json({ ...reorg.listPhysicalShelves(), active: reorg.reorgActive(), moves: reorg.reorgActive() ? reorg.moves() : [] }));
+api.put('/reorg/shelves/:code', (req, res) => { reorg.updatePhysicalShelf(req.params.code, req.body || {}); res.json({ ok: true }); });
+api.post('/reorg/shelves/bulk', (req, res) => {
+  const { codes = [], data = {} } = req.body || {};
+  for (const c of codes) reorg.updatePhysicalShelf(String(c), data);
+  res.json({ ok: true });
+});
+api.delete('/reorg/shelves/:code', (req, res) => {
+  try { reorg.deletePhysicalShelf(req.params.code); res.json({ ok: true }); } catch (e) { res.status(400).json({ error: e.message }); }
+});
+api.post('/reorg/plan', (req, res) => res.json(reorg.makePlan(req.body || {})));
+api.post('/reorg/apply', (req, res) => {
+  const plan = reorg.makePlan(req.body || {});
+  res.json({ shelves: reorg.applyPlan(plan), moving: plan.moving });
+});
+api.post('/reorg/done', (req, res) => { reorg.markDone(req.body.ids || [], req.body.done !== false); res.json({ ok: true }); });
+api.post('/reorg/finish', (req, res) => { reorg.finishReorg(); res.json({ ok: true }); });
+api.post('/reorg/cancel', (req, res) => res.json({ shelves: reorg.cancelReorg() }));
+api.post('/reorg/rebuild', (req, res) => res.json({ shelves: rebuildCaseShelvesFromDb() }));
+api.post('/shelves/:id/save-locations', (req, res) => {
+  const r = reorg.locationsFromShelf(Number(req.params.id));
+  res.json(r);
+});
+
 // Settings
-api.get('/settings', (req, res) => res.json({ site: siteSettings(), defaults: DEFAULT_SITE }));
+api.get('/settings', (req, res) => res.json({ site: siteSettings(), defaults: DEFAULT_SITE, autoMetadata: autoMetadataEnabled() }));
 api.put('/settings', (req, res) => {
   const cur = siteSettings();
-  const { title, tagline, homeIntro, theme } = req.body || {};
+  const { title, tagline, homeIntro, theme, autoMetadata } = req.body || {};
+  if (autoMetadata !== undefined) setSetting('autoMetadata', !!autoMetadata);
   setSetting('site', { ...cur, ...(title !== undefined && { title: String(title).slice(0, 80) || DEFAULT_SITE.title }),
     ...(tagline !== undefined && { tagline: String(tagline).slice(0, 160) }), ...(homeIntro !== undefined && { homeIntro: String(homeIntro).slice(0, 2000) }),
     ...(theme && typeof theme === 'object' && { theme }) });
@@ -434,3 +489,27 @@ api.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) return res.status(400).json({ error: err.message });
   res.status(500).json({ error: err.message || 'Server error' });
 });
+
+function printMoves(by) {
+  const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const list = reorg.moves();
+  const key = by === 'source' ? 'from_code' : 'code';
+  const groups = new Map();
+  for (const m of list) { const k = m[key] || 'Loose'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
+  const sorted = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  for (const [, g] of sorted) g.sort((a, b) => by === 'source' ? (a.from_pos ?? 1e9) - (b.from_pos ?? 1e9) : (a.pos ?? 1e9) - (b.pos ?? 1e9));
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Move list</title><style>
+  body{font:12px/1.35 Georgia,serif;margin:24px;color:#111} h1{font-size:20px;margin:0 0 4px} p{margin:0 0 14px;color:#555}
+  h2{font-size:15px;margin:18px 0 4px;border-bottom:2px solid #111;padding-bottom:2px;break-after:avoid}
+  table{width:100%;border-collapse:collapse} td{padding:3px 6px;border-bottom:1px solid #ddd;vertical-align:top} td.box{width:14px}
+  td.box span{display:inline-block;width:11px;height:11px;border:1px solid #333} td.n{width:28px;text-align:right;color:#555}
+  td.w{white-space:nowrap;width:120px} .done{color:#999;text-decoration:line-through} @media print{.noprint{display:none}}
+  </style></head><body><button class="noprint" onclick="print()">Print</button>
+  <h1>${by === 'source' ? 'Take these books off each shelf' : 'Put these books on each shelf'}</h1>
+  <p>${list.length} books to move. ${by === 'source' ? 'Grouped by where each book is now, left to right.' : 'Grouped by where each book goes, in left-to-right order.'}</p>
+  ${sorted.map(([code, g]) => `<h2>${esc(code)} <small>(${g.length})</small></h2><table>${g.map(m => `<tr class="${m.done ? 'done' : ''}">
+    <td class="box"><span></span></td><td class="n">${esc(by === 'source' ? m.from_pos : m.pos)}</td>
+    <td><b>${esc(m.title)}</b>${m.authors ? ' — ' + esc(m.authors) : ''}${m.series ? ` <i>(${esc(m.series)}${m.series_index ? ' #' + esc(m.series_index) : ''})</i>` : ''}</td>
+    <td class="w">${by === 'source' ? '→ ' + esc(m.code) + (m.pos ? ' #' + esc(m.pos) : '') : 'from ' + esc(m.from_code || '?') + (m.from_pos ? ' #' + esc(m.from_pos) : '')}</td></tr>`).join('')}</table>`).join('')}
+  </body></html>`;
+}
