@@ -32,6 +32,7 @@ Push changes to `main` and wait for the **Build image** action to finish (about 
 | `LIBRARY_DIRS` | `/library` | Folders to scan, separated by commas. Scanning only reads them. |
 | `SCAN_ON_START` | `true` | Scan the library folders when the app starts. |
 | `SCAN_INTERVAL_MINUTES` | `0` | Rescan on a timer (`0` = off). |
+| `GOOGLE_BOOKS_API_KEY` | – | Optional. Google Books limits lookups without a key; a free key from Google Cloud Console raises the limit. |
 | `MAX_UPLOAD_MB` | `1024` | Size limit for each uploaded file. |
 | `SECURE_COOKIES` | `false` | Set to `true` when the app is behind HTTPS. |
 | `PORT` / `DATA_DIR` | `3000` / `/data` | Usually left alone. |

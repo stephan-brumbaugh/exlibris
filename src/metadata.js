@@ -1,14 +1,41 @@
 // Online metadata lookup. Open Library first (no key needed), Google Books as a fallback.
-import { similarity, normAuthor, sleep } from './util.js';
+import { similarity, normAuthor, normTitle, sleep } from './util.js';
 import { getBook, updateBook, queryBooks } from './books.js';
 import { saveCover, fetchImage } from './covers.js';
 
 const UA = { 'User-Agent': 'ExLibris/1.0 (self-hosted personal library)' };
 
-async function getJson(url) {
-  const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(20000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`);
-  return res.json();
+async function getJson(url, tries = 3) {
+  for (let i = 1; ; i++) {
+    const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(20000) });
+    if (res.ok) return res.json();
+    // Both services rate-limit; wait and try again rather than giving up on the book.
+    if ((res.status === 429 || res.status >= 500) && i < tries) {
+      const wait = Math.min(30, Number(res.headers.get('retry-after')) || 4 * i);
+      await sleep(wait * 1000);
+      continue;
+    }
+    throw new Error(`HTTP ${res.status} from ${new URL(url).host}${res.status === 429 ? ' (rate limited)' : ''}`);
+  }
+}
+
+/** Title similarity that also treats "Iceberg" and "Iceberg: A Dirk Pitt Novel" as the same book. */
+export function titleScore(want, got) {
+  const dice = similarity(want || '', got || '');
+  const a = normTitle(want), b = normTitle(got);
+  return a && a === b ? Math.max(dice, 0.95) : dice;
+}
+
+/** Shorter titles to try when the full one finds nothing: the part before ":"/"—" and the part after it. */
+export function altTitles(title) {
+  const t = String(title || '').trim();
+  const out = [];
+  const noParens = t.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
+  if (noParens && noParens !== t) out.push(noParens);
+  const parts = noParens.split(/\s*(?::|—|–| - )\s*/).map(x => x.trim()).filter(x => x.length > 2);
+  if (parts.length > 1) out.push(parts.at(-1));       // "Star Trek: Voyager — Caretaker" -> "Caretaker"
+  if (parts.length === 2) out.push(parts[0]);          // "Iceberg: A Novel" -> "Iceberg"
+  return [...new Set(out.filter(x => x.toLowerCase() !== t.toLowerCase()))].slice(0, 2);
 }
 
 function authorOk(want, got) {
@@ -35,7 +62,8 @@ export async function searchCandidates({ title, authors, isbn }) {
   } catch (e) { errors.push(`Open Library: ${e.message}`); }
   try {
     const q = isbn ? `isbn:${isbn}` : `intitle:${title || ''}${authors ? `+inauthor:${String(authors).split(/;|&/)[0]}` : ''}`;
-    const data = await getJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=6&printType=books`);
+    const key = process.env.GOOGLE_BOOKS_API_KEY ? `&key=${encodeURIComponent(process.env.GOOGLE_BOOKS_API_KEY)}` : '';
+    const data = await getJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=6&printType=books${key}`);
     for (const it of data.items || []) {
       const v = it.volumeInfo || {};
       const img = v.imageLinks?.extraLarge || v.imageLinks?.large || v.imageLinks?.medium || v.imageLinks?.thumbnail;
@@ -50,7 +78,8 @@ export async function searchCandidates({ title, authors, isbn }) {
   } catch (e) { errors.push(`Google Books: ${e.message}`); }
   if (!out.length && errors.length === 2) throw new Error(`Could not reach the book databases (${errors.join('; ')}). Check that the server has internet access.`);
   for (const c of out) {
-    c.score = similarity(title || '', c.title || '') * (authorOk(authors, c.authors) ? 1 : 0.4) + (c.coverUrl ? 0.05 : 0);
+    c.authorMatch = authorOk(authors, c.authors);
+    c.score = titleScore(title, c.title) * (c.authorMatch ? 1 : 0.4) + (c.coverUrl ? 0.05 : 0);
   }
   return out.sort((a, b) => b.score - a.score);
 }
@@ -78,11 +107,15 @@ export async function editionPages(workKey, fallbackMedian = null) {
       const eds = (data.entries || []).filter(e => Number(e.number_of_pages) > 20);
       const mode = list => {
         if (!list.length) return null;
-        // Group page counts within ~3% of each other so 352 and 355 count as the same printing.
-        const counts = new Map();
-        for (const e of list) { const k = Math.round(Number(e.number_of_pages) / 8) * 8; counts.set(k, [...(counts.get(k) || []), Number(e.number_of_pages)]); }
-        const best = [...counts.values()].sort((a, b) => b.length - a.length || b[0] - a[0])[0];
-        return best.sort((a, b) => a - b)[Math.floor(best.length / 2)];
+        // Cluster counts within ~3% of each other (352 vs 355 is the same printing), then take the biggest cluster.
+        const nums = list.map(e => Number(e.number_of_pages)).sort((a, b) => a - b);
+        const groups = [];
+        for (const n of nums) {
+          const g = groups.at(-1);
+          if (g && n - g[0] <= Math.max(6, g[0] * 0.03)) g.push(n); else groups.push([n]);
+        }
+        const best = groups.sort((a, b) => b.length - a.length || a[0] - b[0])[0];
+        return best[Math.floor((best.length - 1) / 2)];
       };
       const fmt = e => String(e.physical_format || '').toLowerCase();
       const hard = mode(eds.filter(e => /hard|cloth|library binding/.test(fmt(e))));
@@ -94,14 +127,38 @@ export async function editionPages(workKey, fallbackMedian = null) {
   return fallbackMedian ? { pages: fallbackMedian, source: 'median' } : null;
 }
 
-export async function enrichBook(id, { replaceCover = false, minScore = 0.8 } = {}) {
+export async function enrichBook(id, { replaceCover = false, minScore = 0.78 } = {}) {
   const b = getBook(id);
   if (!b) return { applied: [] };
   updateBook(id, { meta_checked_at: new Date().toISOString() });
-  const cands = await searchCandidates({ title: b.title, authors: b.authors, isbn: b.isbn });
-  const best = cands.find(c => c.score >= minScore);
-  if (!best) return { applied: [], reason: cands.length ? 'no confident match' : 'no results' };
-  return applyCandidate(id, best, { replaceCover, onlyBlank: true });
+  let cands = await searchCandidates({ title: b.title, authors: b.authors, isbn: b.isbn });
+  let good = cands.filter(c => c.score >= minScore);
+  // Nothing close? Try the main title and the subtitle on their own (only when we know the author, to avoid wrong matches).
+  if (!good.length && b.authors) {
+    for (const t of altTitles(b.title)) {
+      const more = (await searchCandidates({ title: t, authors: b.authors })).filter(c => c.authorMatch && c.score >= Math.max(minScore, 0.85));
+      if (more.length) { good = more; break; }
+      await sleep(600);
+    }
+  }
+  if (!good.length) {
+    const best = cands[0];
+    return { applied: [], outcome: 'nomatch', reason: best ? `no close match (nearest: “${best.title}”${best.authors ? ' by ' + best.authors.split(';')[0] : ''}, ${Math.round(best.score * 100)}%)` : 'not found in Open Library or Google Books' };
+  }
+  // Best match first; then let the other close matches fill anything still missing (e.g. a description only Google has).
+  const applied = [];
+  let first = null;
+  for (const c of good.slice(0, 4)) {
+    const cur = getBook(id);
+    if (first && cur.cover && cur.description && cur.pages) break;
+    const r = await applyCandidate(id, c, { replaceCover: replaceCover && !first, onlyBlank: true });
+    first = first || r.candidate;
+    for (const a of r.applied) if (!applied.includes(a)) applied.push(a);
+  }
+  const after = getBook(id);
+  const stillMissing = ['cover', 'description', 'pages'].filter(k => !after[k]);
+  return { applied, candidate: first, outcome: applied.length ? 'updated' : 'nothingnew',
+    reason: applied.length ? null : `matched “${first?.title}”, but neither site has ${stillMissing.join(' or ') || 'anything more'} for it` };
 }
 
 export async function applyCandidate(id, c, { replaceCover = false, onlyBlank = true } = {}) {
@@ -134,14 +191,15 @@ export async function applyCandidate(id, c, { replaceCover = false, onlyBlank = 
 /** Background job: enrich many books one at a time (polite to the free APIs). */
 export async function enrichMany(ids, job, opts = {}) {
   job.total(ids.length);
-  const res = { updated: 0, skipped: 0, failed: 0 };
+  const res = { updated: 0, 'no match': 0, 'nothing more to find': 0, failed: 0 };
   for (const id of ids) {
     if (job.cancelled()) break;
     const b = getBook(id);
     try {
       const r = await enrichBook(id, opts);
       if (r.applied.length) { res.updated++; job.log(`✓ ${b.title}: ${r.applied.join(', ')}`); }
-      else { res.skipped++; job.log(`– ${b.title}: ${r.reason || 'nothing new'}`); }
+      else if (r.outcome === 'nomatch') { res['no match']++; job.log(`? ${b.title}: ${r.reason}`); }
+      else { res['nothing more to find']++; job.log(`– ${b.title}: ${r.reason || 'nothing new'}`); }
     } catch (e) { res.failed++; job.log(`✗ ${b?.title}: ${e.message}`); }
     job.tick(b?.title);
     await sleep(opts.delayMs ?? 1100);

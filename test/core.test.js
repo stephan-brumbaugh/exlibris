@@ -171,3 +171,38 @@ test('a hand-arranged bookcase can be saved back as home locations', async () =>
   assert.equal(books.getBook(ids[0]).location_position, 2);
   reorg.cancelReorg();
 });
+
+test('metadata lookup: hardcover page count, gap-filling from a second source, clear outcomes', async () => {
+  const meta = await import('../src/metadata.js');
+  const sharp = (await import('sharp')).default;
+  const png = await sharp({ create: { width: 300, height: 450, channels: 3, background: '#335577' } }).jpeg().toBuffer();
+  const realFetch = globalThis.fetch;
+  const json = d => new Response(JSON.stringify(d), { status: 200, headers: { 'content-type': 'application/json' } });
+  globalThis.fetch = async url => {
+    url = String(url);
+    if (url.includes('openlibrary.org/search.json')) return url.includes('Nonexistent') ? json({ docs: [] }) :
+      json({ docs: [{ key: '/works/OL1W', title: 'Mort: A Discworld Novel', author_name: ['Terry Pratchett'], number_of_pages_median: 300, cover_i: 1 }] });
+    if (url.includes('/editions.json')) return json({ entries: [
+      { physical_format: 'Paperback', number_of_pages: 272 }, { physical_format: 'Hardcover', number_of_pages: 243 },
+      { physical_format: 'Hardcover', number_of_pages: 244 }, { physical_format: 'Hardcover', number_of_pages: 316 }] });
+    if (url.includes('/works/OL1W.json')) return json({ title: 'Mort' }); // no description on Open Library
+    if (url.includes('googleapis')) return url.includes('Nonexistent') ? json({}) :
+      json({ items: [{ volumeInfo: { title: 'Mort', authors: ['Terry Pratchett'], description: 'Death takes an apprentice.', pageCount: 288 } }] });
+    if (url.includes('covers.openlibrary.org')) return new Response(png, { status: 200, headers: { 'content-type': 'image/jpeg' } });
+    return new Response('nope', { status: 404 });
+  };
+  try {
+    const mort = getDb().prepare("SELECT * FROM books WHERE title = 'Mort'").get();
+    books.updateBook(mort.id, { pages: null, description: null, cover: null });
+    const r = await meta.enrichBook(mort.id);
+    const after = books.getBook(mort.id);
+    assert.equal(r.outcome, 'updated');
+    assert.ok([243, 244].includes(after.pages), String(after.pages)); assert.equal(after.pages_source, 'hardcover');
+    assert.equal(after.description, 'Death takes an apprentice.'); // filled from Google when Open Library had none
+    assert.ok(after.cover);
+    const again = await meta.enrichBook(mort.id);
+    assert.equal(again.outcome, 'nothingnew');
+    const id = books.createBook({ title: 'Nonexistent Pamphlet', authors: 'Nobody' });
+    assert.equal((await meta.enrichBook(id)).outcome, 'nomatch');
+  } finally { globalThis.fetch = realFetch; }
+});
