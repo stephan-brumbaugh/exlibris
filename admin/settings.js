@@ -17,8 +17,13 @@ function drawSwatches() {
 }
 drawSwatches();
 const auto = el('input', { type: 'checkbox', checked: autoMetadata });
+const pubLib = el('input', { type: 'checkbox', checked: site.publicLibrary !== false });
+const pubDl = el('input', { type: 'checkbox', checked: site.publicDownloads !== false });
+const media = await api('GET', '/media');
+const logo = el('select', {}, el('option', { value: '' }, '❦ (the built-in mark)'), ...media.map(m => el('option', { value: m.id, selected: Number(site.logo) === m.id }, m.original_name || `Image ${m.id}`)));
 const rowH = el('input', { type: 'number', min: 160, max: 380, step: 10, value: site.theme?.rowHeight || 250 });
 const lighting = el('select', {}, ...[['', 'Preset default'], ['none', 'Even'], ['warm', 'Warm lamp'], ['cool', 'Cool daylight'], ['spot', 'Shelf spotlights']].map(([v, l]) => el('option', { value: v, selected: (site.theme?.lighting || '') === v }, l)));
+const layout = el('select', {}, el('option', { value: 'fixed', selected: (site.theme?.layout || 'fixed') === 'fixed' }, 'Keep arrangements exactly; scale bookcases to fit'), el('option', { value: 'fluid', selected: site.theme?.layout === 'fluid' }, 'Let books re-flow to fill each screen'));
 const font = el('select', {}, ...[['serif', 'Book serif'], ['classic', 'Garamond'], ['sans', 'Modern sans'], ['typewriter', 'Typewriter']].map(([v, l]) => el('option', { value: v, selected: (site.theme?.font || 'serif') === v }, l)));
 
 root.append(
@@ -26,14 +31,19 @@ root.append(
     el('div', { class: 'form-grid' }, el('label', {}, 'Name', title), el('label', {}, 'Tagline', tagline), el('label', { class: 'wide' }, 'Welcome text on the home page (optional)', intro))),
   el('section', { class: 'panel stack' }, el('h2', {}, 'Default look'),
     el('p', { class: 'muted small' }, 'Used by the home page and by every shelf that has not picked its own style.'), sw,
-    el('div', { class: 'form-grid' }, el('label', {}, 'Shelf height (px)', rowH), el('label', {}, 'Lighting', lighting), el('label', {}, 'Page font', font))),
+    el('div', { class: 'form-grid' }, el('label', {}, 'Shelf height (px)', rowH), el('label', {}, 'Lighting', lighting), el('label', {}, 'Page font', font), el('label', {}, 'On different screens', layout))),
+  el('section', { class: 'panel stack' }, el('h2', {}, 'Visitors'),
+    el('label', { class: 'inline' }, pubLib, 'Anyone can browse the library without signing in'),
+    el('label', { class: 'inline' }, pubDl, 'Visitors can download e-books and PDFs (you always can when signed in)'),
+    el('label', {}, 'Logo beside the library name (upload images on the Decorations page)', logo)),
   el('section', { class: 'panel stack' }, el('h2', {}, 'Covers & details'),
     el('label', { class: 'inline' }, auto, 'Automatically look up covers, descriptions and page counts for new books'),
     el('p', { class: 'small muted' }, 'Runs after imports, uploads and scans, and every few hours for anything still missing. Each book is looked up once, slowly, on Open Library and Google Books. Page counts prefer the most common hardcover edition, then paperback, and set how thick each spine is drawn.')),
   el('div', { class: 'row' }, el('button', { class: 'btn primary', onclick: guard(async () => {
-    const theme = { preset, rowHeight: Number(rowH.value) || 250, font: font.value };
+    const theme = { preset, rowHeight: Number(rowH.value) || 250, font: font.value, layout: layout.value };
     if (lighting.value) theme.lighting = lighting.value;
-    site = (await api('PUT', '/settings', { title: title.value, tagline: tagline.value, homeIntro: intro.value, theme, autoMetadata: auto.checked })).site;
+    site = (await api('PUT', '/settings', { title: title.value, tagline: tagline.value, homeIntro: intro.value, theme, autoMetadata: auto.checked,
+      publicLibrary: pubLib.checked, publicDownloads: pubDl.checked, logo: logo.value || null })).site;
     toast('Saved');
   }) }, 'Save settings')),
   el('section', { class: 'panel stack', style: { marginTop: '18px' } }, el('h2', {}, 'Admin password'),

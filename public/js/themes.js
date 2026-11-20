@@ -21,18 +21,20 @@ export const FONTS = {
 };
 
 export const THEME_KEYS = ['preset', 'wood', 'woodDark', 'woodLight', 'back', 'plank', 'page', 'ink', 'accent', 'labelStyle',
-  'lighting', 'grain', 'frame', 'rowHeight', 'gap', 'font', 'spineFont', 'backImage', 'backImageMode', 'wallpaper', 'wallpaperMode', 'brick', 'glass', 'dust'];
+  'lighting', 'grain', 'frame', 'rowHeight', 'gap', 'font', 'spineFont', 'backImage', 'backImageMode', 'wallpaper', 'wallpaperMode', 'brick', 'glass', 'dust', 'layout', 'contentWidth'];
 
 /** Merge: preset defaults <- site overrides <- shelf overrides. */
 export function resolveTheme(site = {}, shelf = {}) {
   const preset = shelf.preset || site.preset || 'walnut';
   const base = PRESETS[preset] || PRESETS.walnut;
-  const merged = { rowHeight: 250, gap: 3, font: 'serif', spineFont: 'serif', backImageMode: 'cover', wallpaperMode: 'cover', ...base };
+  const merged = { rowHeight: 250, gap: 3, font: 'serif', spineFont: 'serif', backImageMode: 'cover', wallpaperMode: 'cover', layout: 'fixed', contentWidth: 1216, ...base };
   // Colours from the site theme apply only when the shelf uses the site's preset.
   const siteOver = shelf.preset && shelf.preset !== site.preset ? {} : site;
   for (const src of [siteOver, shelf]) for (const k of THEME_KEYS) if (src[k] !== undefined && src[k] !== '' && src[k] !== null) merged[k] = src[k];
   merged.preset = preset;
   merged.frame = merged.frame !== false && merged.frame !== 'false';
+  merged.contentWidth = Math.max(600, Math.min(2400, Number(merged.contentWidth) || 1216));
+  if (merged.layout !== 'fluid') merged.layout = 'fixed';
   merged.rowHeight = Math.max(160, Math.min(380, Number(merged.rowHeight) || 250));
   return merged;
 }
@@ -41,7 +43,7 @@ export function themeStyle(t) {
   const vars = {
     '--wood': t.wood, '--wood-dark': t.woodDark, '--wood-light': t.woodLight, '--back': t.back, '--plank': t.plank,
     '--page': t.page, '--ink': t.ink, '--accent': t.accent, '--grain': t.grain ?? 0.4, '--row-h': `${t.rowHeight}px`,
-    '--gap': `${t.gap ?? 3}px`, '--font': FONTS[t.font] || FONTS.serif, '--spine-font': FONTS[t.spineFont] || FONTS.serif,
+    '--gap': `${t.gap ?? 3}px`, '--content-w': `${t.contentWidth || 1216}px`, '--font': FONTS[t.font] || FONTS.serif, '--spine-font': FONTS[t.spineFont] || FONTS.serif,
   };
   if (t.backImage) vars['--back-image'] = `url(/media/${Number(t.backImage)})`;
   if (t.wallpaper) vars['--wallpaper'] = `url(/media/${Number(t.wallpaper)})`;
@@ -51,7 +53,7 @@ export function themeStyle(t) {
 export function themeClasses(t) {
   return ['bc', t.frame === false ? 'bc-noframe' : 'bc-frame', `bc-label-${t.labelStyle || 'brass'}`, `bc-light-${t.lighting || 'none'}`,
     t.brick ? 'bc-brick' : '', t.glass ? 'bc-glass' : '', t.backImage ? `bc-backimg bc-backimg-${t.backImageMode || 'cover'}` : '',
-    t.dust ? 'bc-dust' : ''].filter(Boolean).join(' ');
+    t.dust ? 'bc-dust' : '', t.layout === 'fluid' ? '' : 'bc-fixed'].filter(Boolean).join(' ');
 }
 
 export function pageStyle(t) {

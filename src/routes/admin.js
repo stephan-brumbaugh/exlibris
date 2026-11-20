@@ -11,14 +11,14 @@ import { createBook, updateBook, getBook, deleteBook, bookFiles, publicBook, que
 import { listShelves, getShelf, createShelf, updateShelf, deleteShelf, reorderShelves, shelfItems, saveShelfItems, addBooksToShelf } from '../shelves.js';
 import { ingestFile, scanLibrary } from '../ingest.js';
 import { saveCover, fetchImage, removeCoverIfUnused } from '../covers.js';
-import { searchCandidates, applyCandidate, enrichMany, booksNeedingMetadata } from '../metadata.js';
+import { searchCandidates, applyCandidate, enrichMany, booksNeedingMetadata, candidateFromPage } from '../metadata.js';
 import { startJob, getJob, listJobs, cancelJob } from '../jobs.js';
 import { inspect as inspectSheet, runImport } from '../importer.js';
 import { refreshCandidates, listCandidates, applyCandidates } from '../integrations.js';
 import { queueAutoEnrich, autoMetadataEnabled } from '../auto.js';
 import { listSeries, setSeriesColor, renameSeries, createSeriesShelves } from '../series.js';
 import * as reorg from '../reorg.js';
-import { findCopyPairs, mergeBooks, ignorePair } from '../copies.js';
+import { findCopyPairs, findDuplicatePairs, mergeBooks, ignorePair } from '../copies.js';
 import { importFromServer, importFromBackup } from '../shelfhaven.js';
 import { rebuildCaseShelvesFromDb } from '../importer.js';
 import { PRESETS, FONTS } from '../../public/js/themes.js';
@@ -242,6 +242,10 @@ api.delete('/books/:id/cover', (req, res) => {
 api.get('/books/:id/lookup', asyncH(async (req, res) => {
   const b = getBook(Number(req.params.id));
   if (!b) return res.status(404).json({ error: 'Not found' });
+  if (req.query.url) {
+    try { return res.json([await candidateFromPage(String(req.query.url))]); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+  }
   const q = { title: req.query.title || b.title, authors: req.query.authors ?? b.authors, isbn: req.query.isbn || null };
   res.json(await searchCandidates(q));
 }));
@@ -431,6 +435,7 @@ api.post('/integrations/:provider/apply', asyncH(async (req, res) => res.json(aw
 
 // Print & digital copies of the same book
 api.get('/copies', (req, res) => res.json(findCopyPairs({ min: Number(req.query.min) || 0.7 })));
+api.get('/duplicates', (req, res) => res.json(findDuplicatePairs()));
 api.post('/copies/merge', (req, res) => {
   const out = { merged: 0, errors: [] };
   for (const p of req.body.pairs || []) {
@@ -502,11 +507,13 @@ api.post('/shelves/:id/save-locations', (req, res) => {
 api.get('/settings', (req, res) => res.json({ site: siteSettings(), defaults: DEFAULT_SITE, autoMetadata: autoMetadataEnabled() }));
 api.put('/settings', (req, res) => {
   const cur = siteSettings();
-  const { title, tagline, homeIntro, theme, autoMetadata } = req.body || {};
+  const { title, tagline, homeIntro, theme, autoMetadata, publicLibrary, publicDownloads, logo } = req.body || {};
   if (autoMetadata !== undefined) setSetting('autoMetadata', !!autoMetadata);
   setSetting('site', { ...cur, ...(title !== undefined && { title: String(title).slice(0, 80) || DEFAULT_SITE.title }),
     ...(tagline !== undefined && { tagline: String(tagline).slice(0, 160) }), ...(homeIntro !== undefined && { homeIntro: String(homeIntro).slice(0, 2000) }),
-    ...(theme && typeof theme === 'object' && { theme }) });
+    ...(theme && typeof theme === 'object' && { theme }),
+    ...(publicLibrary !== undefined && { publicLibrary: !!publicLibrary }), ...(publicDownloads !== undefined && { publicDownloads: !!publicDownloads }),
+    ...(logo !== undefined && { logo: Number(logo) || null }) });
   res.json({ site: siteSettings() });
 });
 api.post('/password', (req, res) => {

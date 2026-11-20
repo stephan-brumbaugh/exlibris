@@ -314,3 +314,40 @@ test('ShelfHaven backup zip and live server imports', async () => {
     assert.ok(sb && sb.cover, 'series and cover came across');
   } finally { srv.close(); }
 });
+
+test('spaces keep their width and pictures their height on the back panel', () => {
+  const id = shelves.createShelf({ name: 'Spacing' });
+  const media = getDb().prepare("INSERT INTO media (filename, mime) VALUES ('x.png', 'image/png')").run().lastInsertRowid;
+  shelves.saveShelfItems(id, [{ kind: 'space', width: 120 }, { kind: 'decor', media_id: media, size: 'l', raise: 60 }, { kind: 'space', width: 99999 }]);
+  const items = shelves.shelfItems(shelves.getShelf(id));
+  assert.equal(items[0].width, 120);
+  assert.equal(items[1].raise, 60);
+  assert.equal(items[2].width, 600); // clamped
+});
+
+test('ISBN-10 and ISBN-13 of one edition match; apostrophes do not split titles', () => {
+  assert.equal(util.isbn13('0-345-39180-2'), '9780345391803');
+  assert.equal(util.normTitle("The Hitchhiker's Guide"), util.normTitle('The Hitchhikers Guide'));
+});
+
+test('an audiobook-only duplicate of an e-book is offered for joining, separate print copies are not', async () => {
+  const copies = await import('../src/copies.js');
+  const ebook = getDb().prepare("SELECT id FROM books WHERE title = 'Solo Ebook'").get().id;
+  const audio = books.createBook({ title: 'Solo Ebook', authors: 'Some Writer', binding: 'Audiobook', abs_url: 'http://abs/item/s' });
+  const dupes = copies.findDuplicatePairs();
+  const p = dupes.find(d => [d.keep.id, d.drop.id].sort().join() === [ebook, audio].sort().join());
+  assert.ok(p, 'pair offered');
+  assert.equal(p.keep.id, ebook); // the one with a file is kept
+  assert.ok(!dupes.some(d => d.keep.location && d.drop.location), 'two print copies never paired');
+});
+
+test('a pasted book page gives title, author, pages and cover', async () => {
+  const meta = await import('../src/metadata.js');
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => new Response(`<html><head><meta property="og:title" content="Mort by Terry Pratchett"><meta property="og:image" content="https://img/x.jpg">
+    <script type="application/ld+json">{"@type":"Book","name":"Mort","author":[{"@type":"Person","name":"Terry Pratchett"}],"numberOfPages":243,"isbn":"9780062225719"}</script></head></html>`, { status: 200, headers: { 'content-type': 'text/html' } });
+  try {
+    const c = await meta.candidateFromPage('https://www.goodreads.com/book/show/1');
+    assert.equal(c.title, 'Mort'); assert.equal(c.authors, 'Terry Pratchett'); assert.equal(c.pages, 243); assert.equal(c.coverUrl, 'https://img/x.jpg');
+  } finally { globalThis.fetch = real; }
+});

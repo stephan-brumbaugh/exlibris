@@ -1,5 +1,5 @@
 import { api, el, guard, toast, pageData, debounce, app, fmtIndex } from './common.js';
-import { renderItem, surname } from '/js/shelf-render.js';
+import { renderItem, surname, scaledBookcase } from '/js/shelf-render.js';
 import { resolveTheme, themeStyle, themeClasses, PRESETS } from '/js/themes.js';
 import Sortable from '/vendor/sortable.js';
 
@@ -16,18 +16,19 @@ let tab = shelf.kind === 'smart' ? 'settings' : 'add';
 const manual = () => shelf.kind === 'manual';
 
 /* ───────── Saving ───────── */
+const serialise = () => items.map(i => ({ kind: i.kind, book_id: i.book_id, media_id: i.media_id, display: i.display, size: i.size, text: i.text, link: i.link, width: i.width, raise: i.raise }));
 const saveState = el('span', { class: 'save-state' }, 'All changes saved');
 let pending = 0;
 function setState(text, dirty = false) { saveState.textContent = text; saveState.classList.toggle('dirty', dirty); }
 const saveItems = debounce(guard(async () => {
   pending++; setState('Saving…', true);
   try {
-    await api('PUT', `/shelves/${shelfId}/items`, { items: items.map(i => ({ kind: i.kind, book_id: i.book_id, media_id: i.media_id, display: i.display, size: i.size, text: i.text, link: i.link })) });
+    await api('PUT', `/shelves/${shelfId}/items`, { items: serialise() });
     setState('All changes saved');
   } finally { pending--; }
 }), 600);
 async function saveNow() {
-  await api('PUT', `/shelves/${shelfId}/items`, { items: items.map(i => ({ kind: i.kind, book_id: i.book_id, media_id: i.media_id, display: i.display, size: i.size, text: i.text, link: i.link })) });
+  await api('PUT', `/shelves/${shelfId}/items`, { items: serialise() });
   setState('All changes saved');
 }
 const saveShelf = debounce(guard(async patch => {
@@ -64,10 +65,13 @@ function drawStage() {
   }
   if (!items.length) rowsEl.append(el('div', { class: 'item', style: { color: 'var(--ink)', opacity: .7, padding: '0 20px 40px', fontFamily: 'var(--font)' } },
     manual() ? 'This shelf is empty — add books from the panel on the right →' : 'No books match these rules yet.'));
-  const page = el('div', { style: `background:${t.page};padding:18px;border-radius:12px;${t.wallpaper ? `background-image:url(/media/${t.wallpaper});background-size:cover;` : ''}` }, bc);
+  const fixed = t.layout !== 'fluid';
+  const sc = fixed ? scaledBookcase(bc, () => stage.clientWidth - 36) : null;
+  const page = el('div', { style: `background:${t.page};padding:18px;border-radius:12px;${t.wallpaper ? `background-image:url(/media/${t.wallpaper});background-size:cover;` : ''}` }, fixed ? sc.sizer : bc);
   stage.replaceChildren(page);
-  const usable = stage.getBoundingClientRect().width;
+  if (fixed) sc.fit();
   rowsEl.style.minHeight = `${Math.max(3, Math.ceil(rowsEl.scrollHeight / t.rowHeight)) * t.rowHeight}px`;
+  if (fixed) sc.fit();
   sortable?.destroy();
   if (manual()) {
     sortable = Sortable.create(rowsEl, {
@@ -88,7 +92,6 @@ function drawStage() {
       },
     });
   }
-  void usable;
 }
 
 stage.addEventListener('click', e => {
@@ -209,6 +212,35 @@ function tidyPanel() {
       } }, 'Rebuild')));
 }
 
+/** The shelf (run of items between "new shelf" markers) holding an item: indexes from..to, breaks excluded. */
+function sectionOf(key) {
+  const i = items.findIndex(it => it.key === key);
+  if (i < 0) return null;
+  let from = i, to = i;
+  if (items[i].kind === 'break') return null;
+  while (from > 0 && items[from - 1].kind !== 'break') from--;
+  while (to < items.length - 1 && items[to + 1].kind !== 'break') to++;
+  return { from, to };
+}
+function sections() {
+  const out = []; let start = 0;
+  items.forEach((it, i) => { if (it.kind === 'break') { if (i > start) out.push([start, i - 1]); out.push([i, i, true]); start = i + 1; } });
+  if (start < items.length) out.push([start, items.length - 1]);
+  return out;
+}
+/** Swap the selected item's shelf with the previous/next shelf, keeping the markers between them. */
+function moveSection(dir) {
+  const sec = sectionOf([...selected][0]); if (!sec) return;
+  const all = sections().filter(x => !x[2]);
+  const idx = all.findIndex(x => x[0] === sec.from);
+  const other = all[idx + dir];
+  if (!other) return toast(dir < 0 ? 'Already the top shelf' : 'Already the bottom shelf');
+  const [a, b] = dir < 0 ? [other, [sec.from, sec.to]] : [[sec.from, sec.to], other];
+  const before = items.slice(0, a[0]), A = items.slice(a[0], a[1] + 1), mid = items.slice(a[1] + 1, b[0]), B = items.slice(b[0], b[1] + 1), after = items.slice(b[1] + 1);
+  items = [...before, ...B, ...mid, ...A, ...after];
+  changed(); drawStage(); drawInspector();
+}
+
 let allShelves = null;
 async function moveSelection(copy) {
   allShelves = allShelves || (await api('GET', '/shelves')).filter(s => s.kind === 'manual' && s.id !== shelfId);
@@ -280,6 +312,7 @@ function addTab() {
     el('div', { class: 'panel stack' }, el('h2', {}, 'Structure'),
       el('div', { class: 'row' },
         el('button', { class: 'btn', onclick: () => insert([{ kind: 'break' }]) }, '↵ Start new shelf'),
+        el('button', { class: 'btn', title: 'A gap between books — set its width after adding it', onclick: () => insert([{ kind: 'space', width: 40 }]) }, '↔ Space'),
         el('button', { class: 'btn', onclick: () => insert([{ kind: 'break', size: 'row' }]) }, '▭ Empty shelf'),
         el('button', { class: 'btn', onclick: () => { const t = prompt('Label text (e.g. “Science Fiction” or “Shelf B3”)'); if (t) insert([{ kind: 'label', text: t, size: 'plaque' }]); } }, '🏷 Label'))),
     el('div', { class: 'panel stack' }, el('h2', {}, 'Decorations'),
@@ -312,6 +345,8 @@ function selectedTab() {
       el('h2', {}, 'Decoration'),
       el('label', {}, 'Size', el('div', { class: 'row' }, ...[['s', 'Small'], ['m', 'Medium'], ['l', 'Large'], ['xl', 'Full height']].map(([v, l]) =>
         el('button', { class: `btn small${(d.size || 'm') === v ? ' primary' : ''}`, onclick: () => { d.size = v; changed(); drawStage(); drawInspector(); } }, l)))),
+      el('label', {}, `Height on the back of the shelf: ${d.raise ? d.raise + '%' : 'standing on the shelf'}`, el('input', { type: 'range', min: 0, max: 100, step: 5, value: d.raise || 0,
+        oninput: e => { d.raise = Number(e.target.value); changed(); drawStage(); e.target.previousSibling.textContent = `Height on the back of the shelf: ${d.raise ? d.raise + '%' : 'standing on the shelf'}`; } })),
       el('label', {}, 'Caption (optional)', el('input', { value: d.text || '', oninput: e => { d.text = e.target.value; changed(); drawStage(); } })),
       el('label', {}, 'Link when clicked (optional)', el('input', { type: 'url', value: d.link || '', placeholder: 'https://…', oninput: e => { d.link = e.target.value; changed(); } })));
   }
@@ -327,6 +362,16 @@ function selectedTab() {
       el('button', { class: `btn small${b.size !== 'row' ? ' primary' : ''}`, onclick: () => { b.size = null; changed(); drawStage(); drawInspector(); } }, 'Start new shelf'),
       el('button', { class: `btn small${b.size === 'row' ? ' primary' : ''}`, onclick: () => { b.size = 'row'; changed(); drawStage(); drawInspector(); } }, 'Leave a shelf empty'))));
   }
+  if (sel.length === 1 && sel[0].kind === 'space') {
+    const sp = sel[0];
+    box.append(el('h2', {}, 'Space'), el('label', {}, `Width: ${sp.width || 40}px`, el('input', { type: 'range', min: 4, max: 400, step: 2, value: sp.width || 40,
+      oninput: e => { sp.width = Number(e.target.value); e.target.previousSibling.textContent = `Width: ${sp.width}px`; changed(); drawStage(); } })));
+  }
+  const sec = sectionOf([...selected][0]);
+  if (sec) box.append(el('div', { class: 'row' },
+    el('button', { class: 'btn', title: 'Select everything on this shelf, so it can be dragged or moved as one', onclick: () => { selected.clear(); for (let i = sec.from; i <= sec.to; i++) selected.add(items[i].key); drawStage(); drawInspector(); } }, 'Select whole shelf'),
+    el('button', { class: 'btn', title: 'Swap this shelf with the one above', onclick: () => moveSection(-1) }, '↑ Shelf up'),
+    el('button', { class: 'btn', title: 'Swap this shelf with the one below', onclick: () => moveSection(1) }, '↓ Shelf down')));
   box.append(el('div', { class: 'row' },
     el('button', { class: 'btn', onclick: () => insert([{ kind: 'break' }]) }, '↵ New shelf after'),
     el('button', { class: 'btn danger', onclick: removeSelected }, 'Remove from shelf')));
@@ -384,7 +429,10 @@ function styleTab() {
       el('label', {}, 'Default presentation', el('div', { class: 'row' }, ...[['mixed', 'Spines (per-book choice)'], ['cover', 'Covers']].map(([v, l]) =>
         el('button', { class: `btn small${(shelf.display === 'cover' ? 'cover' : 'mixed') === v ? ' primary' : ''}`, onclick: () => { patchShelf({ display: v }); drawInspector(); } }, l)))),
       el('label', {}, `Shelf height: ${t.rowHeight}px`, rowH),
-      choice('spineFont', 'Spine lettering', [['serif', 'Book serif'], ['classic', 'Garamond'], ['sans', 'Modern sans'], ['condensed', 'Condensed'], ['typewriter', 'Typewriter']])),
+      choice('spineFont', 'Spine lettering', [['serif', 'Book serif'], ['classic', 'Garamond'], ['sans', 'Modern sans'], ['condensed', 'Condensed'], ['typewriter', 'Typewriter']]),
+      choice('layout', 'On different screens', [['fixed', 'Keep my arrangement exactly (the case scales to fit)'], ['fluid', 'Let books re-flow to fill the width']]),
+      t.layout !== 'fluid' ? el('label', {}, `Shelf width: ${t.contentWidth}px of books per shelf`, el('input', { type: 'range', min: 700, max: 2000, step: 16, value: t.contentWidth,
+        oninput: debounce(e => set('contentWidth', Number(e.target.value)), 150) })) : null),
     el('div', { class: 'panel stack' }, el('h2', {}, 'Colours'),
       el('div', { class: 'form-grid', style: { gridTemplateColumns: '1fr 1fr' } },
         color('wood', 'Frame'), color('plank', 'Shelf boards'), color('back', 'Back panel'), color('page', 'Room / page'), color('ink', 'Text'), color('accent', 'Accent & gilt'))),

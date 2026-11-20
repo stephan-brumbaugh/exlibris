@@ -167,7 +167,7 @@ export async function applyCandidate(id, c, { replaceCover = false, onlyBlank = 
   const set = (k, v) => { if (v === undefined || v === null || v === '') return; if (onlyBlank && b[k] !== null && b[k] !== '' && b[k] !== undefined) return; fill[k] = v; applied.push(k); };
   if (!b.authors) set('authors', c.authors);
   if (!b.pages || !onlyBlank) {
-    const ep = c.source === 'openlibrary' ? await editionPages(c.workKey, c.pages) : (c.pages ? { pages: c.pages, source: 'google' } : null);
+    const ep = c.source === 'openlibrary' ? await editionPages(c.workKey, c.pages) : (c.pages ? { pages: c.pages, source: c.source || 'google' } : null);
     if (ep) { fill.pages = ep.pages; fill.pages_source = ep.source; applied.push(`pages (${ep.source})`); }
   }
   set('isbn', c.isbn);
@@ -213,4 +213,37 @@ export function booksNeedingMetadata({ uncheckedOnly = false } = {}) {
     .filter(b => !b.cover || !b.description || !b.pages)
     .filter(b => !uncheckedOnly || !b.meta_checked_at)
     .map(b => b.id);
+}
+
+/* ───────── A specific book page (Goodreads, Hardcover, Open Library, a publisher…) ───────── */
+function decodeEntities(s) {
+  return String(s || '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
+}
+
+/** Read title, author, cover, pages and ISBN from a book's web page (Open Graph tags and schema.org data). */
+export async function candidateFromPage(url) {
+  if (!/^https?:\/\//i.test(url)) throw new Error('Paste a full link starting with http');
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ExLibris/1.0)', Accept: 'text/html' }, signal: AbortSignal.timeout(20000) });
+  if (!res.ok) throw new Error(`That page answered HTTP ${res.status}`);
+  const html = (await res.text()).slice(0, 2_000_000);
+  const meta = name => decodeEntities((html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]*content=["']([^"']*)["']`, 'i'))
+    || html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${name}["']`, 'i')) || [])[1]);
+  const c = { source: 'web', title: meta('og:title'), coverUrl: meta('og:image') || null, description: meta('og:description') || meta('description'), score: 1 };
+  for (const m of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    let j; try { j = JSON.parse(m[1]); } catch { continue; }
+    for (const node of [j, ...(Array.isArray(j) ? j : []), ...(j['@graph'] || [])]) {
+      if (!node || !/Book/i.test(String(node['@type']))) continue;
+      c.title = node.name || c.title;
+      const a = Array.isArray(node.author) ? node.author : node.author ? [node.author] : [];
+      c.authors = a.map(x => (typeof x === 'string' ? x : x.name)).filter(Boolean).join('; ') || c.authors;
+      c.isbn = node.isbn || c.isbn;
+      c.pages = Number(node.numberOfPages) || c.pages;
+      c.coverUrl = (typeof node.image === 'string' ? node.image : node.image?.url) || c.coverUrl;
+      if (node.description) c.description = node.description;
+    }
+  }
+  if (!c.title) throw new Error('No book details found on that page');
+  c.title = decodeEntities(c.title).replace(/\s+by\s+.+$/i, '').replace(/\s*\|\s*Goodreads$/i, '').trim();
+  c.description = c.description ? decodeEntities(c.description).replace(/<[^>]+>/g, '') : null;
+  return c;
 }

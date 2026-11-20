@@ -37,6 +37,7 @@ async function load() {
   const u = new URL(location.href); for (const k of ['q', 'filter', 'sort']) state[k] ? u.searchParams.set(k, state[k]) : u.searchParams.delete(k); history.replaceState(null, '', u);
   const data = await api('GET', `/books?${p}`);
   state.rows = data.books; state.total = data.total;
+  try { sessionStorage.setItem('exl-book-order', JSON.stringify(state.rows.map(r => r.id))); } catch { /* private mode */ }
   render();
 }
 

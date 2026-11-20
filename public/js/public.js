@@ -1,4 +1,4 @@
-import { el, renderShelf, renderItem, fillRows, generatedCover, fmtIndex, surname } from './shelf-render.js';
+import { el, renderShelf, renderItem, fillRows, generatedCover, fmtIndex, surname, scaledBookcase } from './shelf-render.js';
 import { themeStyle, themeClasses } from './themes.js';
 
 const data = JSON.parse(document.getElementById('page-data').textContent);
@@ -12,15 +12,19 @@ function fmtSize(n) {
 
 /* ───────────── Bookcase ───────────── */
 export function bookcase({ shelf, theme, items, viewOverride = null, rowH = null, crown = true }) {
-  const t = { ...theme, ...(rowH ? { rowHeight: rowH } : {}) };
-  // Phones: shorter shelves so more than a handful of spines fit across.
-  if (!rowH && window.innerWidth < 640) t.rowHeight = Math.max(150, Math.round((t.rowHeight || 250) * 0.72));
+  // Small previews (home page) always flow to fit; full bookcases keep their arrangement and scale instead.
+  const t = { ...theme, ...(rowH ? { rowHeight: rowH, layout: 'fluid' } : {}) };
+  const fixed = t.layout !== 'fluid';
+  // Phones, flowing layout only: shorter shelves so more than a handful of spines fit across.
+  if (!rowH && !fixed && window.innerWidth < 640) t.rowHeight = Math.max(150, Math.round((t.rowHeight || 250) * 0.72));
   const rows = el('div', { class: 'bc-rows' });
   const root = el('section', { class: themeClasses(t), style: themeStyle(t), 'aria-label': shelf.name },
     crown ? el('header', { class: 'bc-crown' }, el('div', { class: 'bc-nameplate' }, shelf.name), shelf.description ? el('p', { class: 'bc-desc' }, shelf.description) : null) : null,
     rows);
   renderShelf(rows, items, { shelfDisplay: shelf.display, viewOverride, rowH: t.rowHeight });
-  return { root, rows, rowH: t.rowHeight };
+  if (!fixed) return { root, rows, rowH: t.rowHeight, fit: () => 1 };
+  const sc = scaledBookcase(root);
+  return { root: sc.sizer, rows, rowH: t.rowHeight, fit: sc.fit };
 }
 
 /* ───────────── Spine tooltip ───────────── */
@@ -51,7 +55,7 @@ function setupTooltip(container, books) {
 /** Which copies you own — the same card appears from a home bookcase or a digital one. */
 function ownedBadges(b) {
   const print = !!b.location || ['Hardback', 'Paperback', 'Other'].includes(b.binding);
-  const digital = (b.files || []).length > 0;
+  const digital = (b.files || []).length > 0 || b.digitalCount > 0;
   const audio = (b.links || []).some(l => ['abs', 'plex', 'audible'].includes(l.kind));
   const tags = [print && `Print copy at home${b.binding && b.binding !== 'Other' ? ` (${b.binding.toLowerCase()})` : ''}`, digital && 'Digital copy', audio && 'Audiobook'].filter(Boolean);
   return tags.length ? el('p', { class: 'bk-owned' }, ...tags.map(t => el('span', {}, t))) : null;
@@ -101,19 +105,42 @@ function bookCard(b, { modal = false } = {}) {
 }
 
 let modalEl = null, returnFocus = null, pushed = false;
+let bookOrder = [];            // the order books appear on the current page, for Previous / Next
+export function setBookOrder(ids) { bookOrder = ids; }
+
+function navFor(id) {
+  const i = bookOrder.indexOf(id);
+  if (i < 0 || bookOrder.length < 2) return null;
+  return { prev: i > 0 ? bookOrder[i - 1] : null, next: i < bookOrder.length - 1 ? bookOrder[i + 1] : null, pos: i + 1, total: bookOrder.length };
+}
+
 async function openBook(id, push = true) {
   try {
     const res = await fetch(`/api/books/${id}`);
     if (!res.ok) throw new Error();
     const b = await res.json();
-    closeModal(false);
-    returnFocus = document.activeElement;
-    modalEl = el('div', { class: 'modal-backdrop', onclick: e => { if (e.target === modalEl) closeModal(); } }, bookCard(b, { modal: true }));
+    const wasOpen = !!modalEl;
+    if (modalEl) { modalEl.remove(); modalEl = null; }
+    if (!wasOpen) returnFocus = document.activeElement;
+    const nav = navFor(id);
+    const card = bookCard(b, { modal: true });
+    if (nav) {
+      const go = to => () => { if (to) openBook(to, 'replace'); };
+      card.append(el('div', { class: 'bk-nav' },
+        el('button', { type: 'button', class: 'bk-prev', disabled: !nav.prev, onclick: go(nav.prev), 'aria-label': 'Previous book' }, '‹ Previous'),
+        el('span', {}, `${nav.pos} of ${nav.total}`),
+        el('button', { type: 'button', class: 'bk-next', disabled: !nav.next, onclick: go(nav.next), 'aria-label': 'Next book' }, 'Next ›')));
+    }
+    modalEl = el('div', { class: 'modal-backdrop', onclick: e => { if (e.target === modalEl) closeModal(); } }, card);
+    modalEl.dataset.bookId = id;
     document.body.append(modalEl);
     document.body.style.overflow = 'hidden';
     modalEl.querySelector('.bk-close').focus();
-    if (push) { history.pushState({ book: id }, '', `/book/${id}`); pushed = true; }
+    if (push === 'replace') history.replaceState({ book: id }, '', `/book/${id}`);
+    else if (push) { history.pushState({ book: id }, '', `/book/${id}`); pushed = true; }
     document.title = `${b.title} · ${data.site.title}`;
+    // Keep the shelf in step with the card, so closing it lands on the book you were last looking at.
+    document.querySelector(`.item.book[data-book-id="${id}"]`)?.scrollIntoView({ block: 'center' });
   } catch { location.href = `/book/${id}`; }
 }
 function closeModal(pop = true) {
@@ -124,15 +151,37 @@ function closeModal(pop = true) {
 }
 const baseTitle = document.title;
 window.addEventListener('popstate', () => { if (modalEl) { pushed = false; closeModal(false); document.title = baseTitle; } });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && modalEl) closeModal(); });
+document.addEventListener('keydown', e => {
+  if (lightboxEl && e.key === 'Escape') { lightboxEl.remove(); lightboxEl = null; return; }
+  if (!modalEl) return;
+  if (e.key === 'Escape') { closeModal(); return; }
+  const nav = navFor(Number(modalEl.dataset.bookId));
+  if (nav && e.key === 'ArrowRight' && nav.next) openBook(nav.next, 'replace');
+  if (nav && e.key === 'ArrowLeft' && nav.prev) openBook(nav.prev, 'replace');
+});
+
+/* Full-size view of a decoration */
+let lightboxEl = null;
+function showPicture(src, alt) {
+  lightboxEl?.remove();
+  lightboxEl = el('div', { class: 'lightbox', role: 'dialog', 'aria-label': alt || 'Picture', onclick: () => { lightboxEl.remove(); lightboxEl = null; } },
+    el('img', { src, alt: alt || '' }), el('button', { type: 'button', 'aria-label': 'Close' }, '×'));
+  document.body.append(lightboxEl);
+}
 
 function interceptBookLinks(container) {
   container.addEventListener('click', e => {
+    const pic = e.target.closest('.decor[data-media]');
+    if (pic) { showPicture(pic.dataset.media, pic.querySelector('img')?.alt); return; }
     const a = e.target.closest('a.item.book');
     if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
     e.preventDefault();
     tip?.classList.remove('show');
     openBook(Number(a.dataset.bookId));
+  });
+  container.addEventListener('keydown', e => {
+    const pic = e.target.closest?.('.decor[data-media]');
+    if (pic && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); showPicture(pic.dataset.media, pic.querySelector('img')?.alt); }
   });
 }
 
@@ -147,8 +196,11 @@ function shelfPage() {
   const draw = () => {
     current = bookcase({ shelf: data.shelf, theme: data.theme, items: data.items, viewOverride: view === 'arranged' ? null : view });
     host.replaceChildren(current.root);
-    fillRows(current.rows, current.rowH, 3);
+    const s1 = current.fit();
+    fillRows(current.rows, current.rowH, 3, s1);
+    current.fit();
     applyFilter();
+    setBookOrder([...current.rows.querySelectorAll('.item.book')].map(n => Number(n.dataset.bookId)));
   };
   const viewBtns = [['arranged', 'As arranged'], ['spine', 'Spines'], ['cover', 'Covers']].map(([v, label]) =>
     el('button', { type: 'button', 'aria-pressed': String(view === v), onclick: () => {
@@ -156,7 +208,13 @@ function shelfPage() {
       const u = new URL(location.href); v === 'arranged' ? u.searchParams.delete('view') : u.searchParams.set('view', v); history.replaceState(null, '', u);
       draw();
     }, dataset: { v } }, label));
-  const filter = el('input', { type: 'search', placeholder: 'Find on this shelf…', 'aria-label': 'Find on this shelf', oninput: () => applyFilter() });
+  const filter = el('input', { type: 'search', placeholder: 'Find on this shelf…', 'aria-label': 'Find on this shelf (Enter opens the first match)', oninput: () => applyFilter(),
+    onkeydown: e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const first = current.rows.querySelector('.item.book:not(.dim)');
+      if (first && filter.value.trim()) { first.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(() => openBook(Number(first.dataset.bookId)), 350); }
+    } });
   const note = el('span', { class: 'count-note' }, `${books.size} book${books.size === 1 ? '' : 's'}`);
   function applyFilter() {
     const q = filter.value.trim().toLowerCase();
@@ -178,7 +236,7 @@ function shelfPage() {
   draw();
   interceptBookLinks(host);
   setupTooltip(host, books);
-  let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => fillRows(current.rows, current.rowH, 3), 150); });
+  let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { const sc = current.fit(); fillRows(current.rows, current.rowH, 3, sc); current.fit(); }, 150); });
 }
 
 function homePage() {

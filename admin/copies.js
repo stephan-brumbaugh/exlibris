@@ -41,3 +41,33 @@ function draw() {
         }) }, 'Not the same'))))))));
 }
 draw();
+
+/* ───────── Other duplicates ───────── */
+const dupBox = el('section', { class: 'panel stack', style: { marginTop: '24px' } });
+root.append(dupBox);
+async function drawDupes() {
+  const dupes = await api('GET', '/duplicates');
+  const describe = b => [b.binding, b.location ? `shelf ${b.location}` : null, b.formats ? b.formats.toUpperCase() : null, (b.abs_url || b.plex_url || b.audible_url) ? 'audiobook link' : null].filter(Boolean).join(' · ');
+  dupBox.replaceChildren(el('h2', {}, 'Other duplicates'),
+    el('p', { class: 'muted small' }, 'The same title entered twice — for example an e-book plus a separate audiobook-only entry. Pick which entry to keep; the other one’s files, links and shelf places move onto it. Two print copies on different shelves are never listed here: those are real, separate copies.'),
+    dupes.length ? el('div', { class: 'table-wrap' }, el('table', {},
+      el('thead', {}, el('tr', {}, ...['Keep', '', 'Fold in', '', 'Why', ''].map(h => el('th', {}, h)))),
+      el('tbody', {}, ...dupes.map(p => {
+        let keep = p.keep, drop = p.drop;
+        const cell = b => el('td', {}, el('a', { href: `/admin/books/${b.id}`, target: '_blank' }, el('strong', {}, b.title)), el('div', { class: 'small muted' }, [b.authors, describe(b)].filter(Boolean).join(' — ')));
+        const row = el('tr', {});
+        const draw = () => row.replaceChildren(cell(keep),
+          el('td', {}, el('button', { class: 'btn small', title: 'Swap which one is kept', onclick: () => { [keep, drop] = [drop, keep]; draw(); } }, '⇄')),
+          cell(drop), el('td', {}),
+          el('td', {}, el('span', { class: 'chip' }, p.why)),
+          el('td', { class: 'row', style: { flexWrap: 'nowrap' } },
+            el('button', { class: 'btn small primary', onclick: guard(async () => {
+              if (!confirm(`Fold “${drop.title}” into “${keep.title}”? Its files, links and shelf places move over and the extra entry is removed.`)) return;
+              await api('POST', '/copies/merge', { pairs: [{ keep: keep.id, drop: drop.id }] }); toast('Joined'); drawDupes();
+            }) }, 'Join'),
+            el('button', { class: 'btn small', onclick: guard(async () => { await api('POST', '/copies/ignore', { keep: keep.id, drop: drop.id }); drawDupes(); }) }, 'Not the same')));
+        draw();
+        return row;
+      })))) : el('p', {}, 'No duplicates found.'));
+}
+drawDupes();

@@ -12,6 +12,17 @@ import { isAuthed } from '../auth.js';
 
 export const publicRouter = express.Router();
 
+/** Visitors who aren't signed in can download only when the library allows it. */
+export const canDownload = req => siteSettings().publicDownloads !== false || isAuthed(req);
+
+// A private library: everything except the health check and login sends visitors to sign in.
+publicRouter.use((req, res, next) => {
+  if (siteSettings().publicLibrary !== false || isAuthed(req) || req.path === '/healthz') return next();
+  if (req.path.startsWith('/api/') || req.path.startsWith('/files/')) return res.status(401).json({ error: 'This library is private' });
+  if (req.path.startsWith('/covers/') || req.path.startsWith('/media/')) return res.status(401).end();
+  res.redirect(`/admin/login?next=${encodeURIComponent(req.originalUrl)}`);
+});
+
 const MIME = { epub: 'application/epub+zip', pdf: 'application/pdf', mobi: 'application/x-mobipocket-ebook', azw3: 'application/vnd.amazon.ebook',
   azw: 'application/vnd.amazon.ebook', cbz: 'application/vnd.comicbook+zip', cbr: 'application/vnd.comicbook-rar', djvu: 'image/vnd.djvu',
   fb2: 'application/x-fictionbook+xml', txt: 'text/plain; charset=utf-8', rtf: 'application/rtf', m4b: 'audio/mp4', mp3: 'audio/mpeg',
@@ -76,7 +87,9 @@ publicRouter.get('/search', (req, res) => {
 function bookPayload(id, req) {
   const b = getBook(Number(id));
   if (!b || (b.hidden && !isAuthed(req))) return null;
-  return { ...publicBook(b, bookFiles(b.id)), shelves: shelvesForBook(b.id) };
+  const book = { ...publicBook(b, bookFiles(b.id)), shelves: shelvesForBook(b.id) };
+  if (!canDownload(req) && book.files.length) { book.digitalCount = book.files.length; book.files = []; book.downloadsOff = true; }
+  return book;
 }
 
 publicRouter.get('/book/:id', (req, res, next) => {
@@ -108,6 +121,7 @@ publicRouter.get('/api/search', (req, res) => {
 function sendBookFile(req, res, next, inline) {
   const f = getDb().prepare('SELECT f.*, b.title, b.authors, b.hidden FROM book_files f JOIN books b ON b.id = f.book_id WHERE f.id = ?').get(Number(req.params.id));
   if (!f || f.missing || (f.hidden && !isAuthed(req))) return next();
+  if (!canDownload(req)) return res.status(403).send('Downloads are turned off for visitors to this library.');
   if (!fs.existsSync(f.path)) return res.status(410).send('This file is no longer available on the server.');
   const name = safeFilename(`${f.title}${f.authors ? ' - ' + f.authors.split(/;|&/)[0].trim() : ''}`) + '.' + f.format;
   res.setHeader('Content-Type', MIME[f.format] || 'application/octet-stream');

@@ -49,7 +49,31 @@ export function normaliseRecord(rec, absBase = '') {
     else if (/^https?:\/\/.+\/item\/[\w-]+$/.test(v)) out.abs_url = out.abs_url || v;
     else if (/(audiobookshelf|^abs).*id$/i.test(k) && !/library|user/i.test(k)) out.abs_id = out.abs_id || v;
   }
+  // The customised ShelfHaven marks audiobook-only records with fileUrl "audiobookshelf:<item id>".
+  const marker = /^audiobookshelf:([\w-]+)$/i.exec(String(out.fileUrl || ''));
+  if (marker) { out.abs_id = out.abs_id || marker[1]; out.fileUrl = null; }
+  // Linked audiobooks may also arrive as a list (AudiobookshelfItem rows).
+  for (const k of Object.keys(rec)) {
+    if (!/audiobook/i.test(k) || !Array.isArray(rec[k])) continue;
+    const first = rec[k].find(x => x && (x.externalItemId || x.itemId));
+    if (first) out.abs_id = out.abs_id || first.externalItemId || first.itemId;
+  }
   if (!out.abs_url && out.abs_id && absBase) out.abs_url = `${trim(absBase)}/item/${out.abs_id}`;
+  // Categories and topics become tags.
+  const names = [];
+  for (const k of ['categories', 'topics']) {
+    for (const c of Array.isArray(rec[k]) ? rec[k] : []) {
+      const n = c?.category?.name || c?.topic?.name || c?.name || (typeof c === 'string' ? c : null);
+      if (n) names.push(n);
+    }
+  }
+  out.tags = names.length ? [...new Set(names)].join(', ') : null;
+  // Files kept from merged-away records (BookAlternateFile in the customised ShelfHaven).
+  out.alternates = [];
+  for (const k of Object.keys(rec)) {
+    if (!/alternate/i.test(k) || !Array.isArray(rec[k])) continue;
+    for (const f of rec[k]) if (f && (f.id || f.fileUrl)) out.alternates.push({ id: f.id, fileUrl: f.fileUrl, format: String(f.format || f.originalFormat || '').toLowerCase() || null });
+  }
   // ShelfHaven used a placeholder fileUrl for audiobook-only records.
   if (out.fileUrl && !/\.\w{2,5}$/.test(String(out.fileUrl)) && !/\/download/.test(String(out.fileUrl))) out.fileUrl = null;
   return out;
@@ -76,7 +100,7 @@ function destFor(rec, ext) {
 function fillBlanks(bookId, rec) {
   const b = getBook(bookId);
   const fill = {};
-  for (const k of ['authors', 'description', 'isbn', 'language', 'published', 'series', 'series_index', 'abs_url', 'abs_id']) {
+  for (const k of ['authors', 'description', 'isbn', 'language', 'published', 'series', 'series_index', 'abs_url', 'abs_id', 'tags']) {
     if ((b[k] === null || b[k] === '') && rec[k]) fill[k] = rec[k];
   }
   if (!b.pages && rec.pages) { fill.pages = rec.pages; fill.pages_source = 'shelfhaven'; }
@@ -234,6 +258,13 @@ export async function importFromServer(opts, job) {
         if (out.some(o => o.ext === ext)) continue;
         out.push({ ext, buf: Buffer.from(await res.arrayBuffer()) });
       }
+      for (const a of rec.alternates || []) {
+        if (!a.id) continue;
+        const res = await s.fetch(`/api/books/${encodeURIComponent(rec.id)}/files/${encodeURIComponent(a.id)}`);
+        if (!res.ok) continue;
+        const ext = extFrom(res, a.format || 'epub');
+        if (!out.some(o => o.ext === ext)) out.push({ ext, buf: Buffer.from(await res.arrayBuffer()) });
+      }
       return out;
     },
     cover: async rec => {
@@ -256,13 +287,21 @@ export async function importFromBackup(zipPath, opts, job) {
   if (!dbEntry) throw new Error('This is not a ShelfHaven backup (no database.json inside)');
   const data = JSON.parse(dbEntry.getData().toString('utf8'));
   const absBase = opts.absUrl || getSetting('abs')?.publicUrl || getSetting('abs')?.url || '';
-  const records = (data.books || []).map(b => normaliseRecord(b, absBase));
+  // Categories are stored as separate tables in a backup; attach them to each book before normalising.
+  const catName = new Map((data.categories || []).map(c => [c.id, c.name]));
+  const cats = new Map();
+  for (const bc of data.bookCategories || []) {
+    const n = catName.get(bc.categoryId); if (!n) continue;
+    if (!cats.has(bc.bookId)) cats.set(bc.bookId, []);
+    cats.get(bc.bookId).push({ name: n });
+  }
+  const records = (data.books || []).map(b => normaliseRecord({ ...b, categories: b.categories || cats.get(b.id) || [] }, absBase));
   const entry = ref => { const r = parseRef(ref); return r ? zip.getEntry(`files/${r.bucket}/${r.key}`) : null; };
   job.log(`Backup holds ${records.length} books`);
   return runAll(records, {
     files: async rec => {
       const out = [];
-      for (const ref of [rec.originalFileUrl, rec.fileUrl]) {
+      for (const ref of [rec.originalFileUrl, rec.fileUrl, ...(rec.alternates || []).map(a => a.fileUrl)]) {
         const e = entry(ref);
         if (!e) continue;
         const ext = path.extname(e.entryName).slice(1).toLowerCase();

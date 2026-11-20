@@ -113,10 +113,10 @@ export function shelfItems(shelf, { includeHidden = false } = {}) {
       const b = books.get(r.book_id);
       if (b) out.push({ id: r.id, kind: 'book', display: r.display, book: b });
     } else if (r.kind === 'decor') {
-      if (r.media_id) out.push({ id: r.id, kind: 'decor', size: r.size || 'm', text: r.text, link: r.link,
+      if (r.media_id) out.push({ id: r.id, kind: 'decor', size: r.size || 'm', text: r.text, link: r.link, raise: r.raise || 0,
         media: { id: r.media_id, url: `/media/${r.media_id}`, w: r.media_w, h: r.media_h, animated: !!r.media_animated } });
     } else {
-      out.push({ id: r.id, kind: r.kind, text: r.text, size: r.size });
+      out.push({ id: r.id, kind: r.kind, text: r.text, size: r.size, width: r.width });
     }
   }
   return out;
@@ -128,17 +128,19 @@ export function shelfItems(shelf, { includeHidden = false } = {}) {
  */
 export function saveShelfItems(shelfId, items) {
   const db = getDb();
-  const ins = db.prepare(`INSERT INTO shelf_items (shelf_id, position, kind, book_id, media_id, display, size, text, link)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const ins = db.prepare(`INSERT INTO shelf_items (shelf_id, position, kind, book_id, media_id, display, size, text, link, width, raise)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const int = (v, lo, hi) => (v === null || v === undefined || v === '' ? null : Math.max(lo, Math.min(hi, Math.round(Number(v)) || 0)));
   db.transaction(() => {
     db.prepare('DELETE FROM shelf_items WHERE shelf_id = ?').run(shelfId);
     items.forEach((it, i) => {
-      const kind = ['book', 'decor', 'break', 'label'].includes(it.kind) ? it.kind : null;
+      const kind = ['book', 'decor', 'break', 'label', 'space'].includes(it.kind) ? it.kind : null;
       if (!kind) return;
       if (kind === 'book' && !it.book_id) return;
       if (kind === 'decor' && !it.media_id) return;
       ins.run(shelfId, i, kind, kind === 'book' ? Number(it.book_id) : null, kind === 'decor' ? Number(it.media_id) : null,
-        ['spine', 'cover'].includes(it.display) ? it.display : 'inherit', it.size || null, it.text || null, it.link || null);
+        ['spine', 'cover'].includes(it.display) ? it.display : 'inherit', it.size || null, it.text || null, it.link || null,
+        kind === 'space' ? (int(it.width, 4, 600) ?? 40) : null, kind === 'decor' ? int(it.raise, 0, 100) : null);
     });
     db.prepare("UPDATE shelves SET updated_at = datetime('now') WHERE id = ?").run(shelfId);
   })();

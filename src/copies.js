@@ -3,7 +3,7 @@
 // didn't join up automatically and merge them on request.
 import { getDb } from './db.js';
 import { getBook, updateBook, PHYSICAL_SQL, DIGITAL_SQL } from './books.js';
-import { normAuthor } from './util.js';
+import { normAuthor, normTitle, isbn13 } from './util.js';
 import { titleScore } from './metadata.js';
 import { removeCoverIfUnused } from './covers.js';
 
@@ -36,6 +36,48 @@ export function findCopyPairs({ min = 0.7 } = {}) {
   return pairs.sort((a, b) => b.score - a.score);
 }
 
+/**
+ * Other duplicates — e.g. an e-book and a separate audiobook-only entry for the same title, or the same e-book
+ * added twice. Two print copies with their own shelf places are never offered (they are real, separate copies).
+ */
+export function findDuplicatePairs({ min = 0.9 } = {}) {
+  const db = getDb();
+  const books = db.prepare(`SELECT id, title, authors, isbn, series, series_index, binding, location, location_position, cover, abs_url, plex_url, audible_url,
+      (SELECT GROUP_CONCAT(format) FROM book_files f WHERE f.book_id = books.id AND f.missing = 0) AS formats FROM books`).all();
+  const ignored = new Set(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'copyPairsIgnored'").get()?.value || '[]'));
+  const buckets = new Map();
+  for (const b of books) {
+    const k = normTitle(b.title).split(' ').find(w => w.length > 2) || normTitle(b.title);
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(b);
+  }
+  const rank = b => (b.location ? 4 : 0) + (b.formats ? 2 : 0) + (b.cover ? 1 : 0);
+  const pairs = [];
+  const seen = new Set();
+  const consider = (a, b) => {
+    if (a.id === b.id || (a.location && b.location)) return;
+    const key = a.id < b.id ? `${a.id}:${b.id}` : `${b.id}:${a.id}`;
+    if (seen.has(key)) return; seen.add(key);
+    if (!authorsCompatible(a.authors, b.authors)) return;
+    const sameIsbn = isbn13(a.isbn) && isbn13(a.isbn) === isbn13(b.isbn);
+    const score = sameIsbn ? 1 : titleScore(a.title, b.title);
+    if (score < min) return;
+    const [keep, drop] = rank(a) >= rank(b) ? [a, b] : [b, a];
+    if (ignored.has(`${keep.id}:${drop.id}`) || ignored.has(`${drop.id}:${keep.id}`)) return;
+    pairs.push({ keep, drop, score: Math.round(score * 100) / 100, why: sameIsbn ? 'same ISBN' : score >= 0.99 ? 'same title' : 'very similar title' });
+  };
+  for (const [k, list] of buckets) {
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) consider(list[i], list[j]);
+    void k;
+  }
+  // Same ISBN across different first words
+  const byIsbn = new Map();
+  for (const b of books) { const i = isbn13(b.isbn); if (!i) continue; if (byIsbn.has(i)) consider(byIsbn.get(i), b); else byIsbn.set(i, b); }
+  // Print-vs-digital pairs are shown in their own list.
+  const copy = new Set(findCopyPairs().map(p => `${p.print.id}:${p.digital.id}`));
+  return pairs.filter(p => !copy.has(`${p.keep.id}:${p.drop.id}`)).sort((a, b) => b.score - a.score);
+}
+
 export function ignorePair(printId, digitalId) {
   const db = getDb();
   const list = JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'copyPairsIgnored'").get()?.value || '[]');
@@ -44,7 +86,9 @@ export function ignorePair(printId, digitalId) {
 }
 
 const FILL = ['subtitle', 'authors', 'series', 'series_index', 'description', 'publisher', 'published', 'isbn', 'language', 'pages', 'pages_source',
-  'tags', 'abs_url', 'abs_id', 'plex_url', 'plex_key', 'audible_url', 'spine_color', 'spine_text_color', 'spine_image'];
+  'tags', 'abs_url', 'abs_id', 'plex_url', 'plex_key', 'audible_url', 'spine_color', 'spine_text_color', 'spine_image',
+  'location', 'location_position', 'room', 'source_key'];
+const PRINT = ['Hardback', 'Paperback', 'Other'];
 
 /**
  * Merge `dropId` into `keepId`: files, audio links, shelf places and any blank details move over, then the
@@ -61,6 +105,10 @@ export function mergeBooks(keepId, dropId) {
     db.prepare('UPDATE book_files SET book_id = ? WHERE book_id = ?').run(keepId, dropId);
     const fill = {};
     for (const f of FILL) if ((keep[f] === null || keep[f] === '') && drop[f] !== null && drop[f] !== '') fill[f] = drop[f];
+    // A print binding wins over Ebook/Audiobook, so the joined book still counts as a copy at home.
+    if (PRINT.includes(drop.binding) && !PRINT.includes(keep.binding)) fill.binding = drop.binding;
+    // The spreadsheet's key moves with it so a later re-import updates this book instead of re-creating it.
+    if (fill.source_key) db.prepare('UPDATE books SET source_key = NULL WHERE id = ?').run(dropId);
     if (!keep.cover && drop.cover) { fill.cover = drop.cover; fill.cover_color = drop.cover_color; } else oldCover = drop.cover;
     let links = []; try { links = [...JSON.parse(keep.other_links || '[]'), ...JSON.parse(drop.other_links || '[]')]; } catch { /* */ }
     if (links.length) fill.other_links = JSON.stringify(links.filter((l, i, a) => a.findIndex(x => x.url === l.url) === i));

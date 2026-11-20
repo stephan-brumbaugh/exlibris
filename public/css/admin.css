@@ -159,3 +159,6 @@ td input.cell { width: 100%; padding: 4px 6px; }
   .edit-layout { grid-template-columns: 1fr; }
   .edit-cover { position: static; }
 }
+.builder-stage .item.space { outline: 1px dashed rgba(77,163,255,.7); outline-offset: -6px; justify-content: center; }
+.builder-stage .space-hint { color: #4da3ff; font: 12px var(--font); padding-bottom: 30px; }
+.builder-stage .bc-sizer { margin: 0; }

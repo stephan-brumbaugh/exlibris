@@ -24,13 +24,13 @@ export function publicPage({ title, body, data = {}, theme = null, script = 'pub
 </head>
 <body class="pub ${h(bodyClass)}${t.wallpaper ? ' has-wallpaper' : ''}" style="${h(pageStyle(t))}">
 <header class="topbar">
-  <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">❦</span><span>${h(site.title)}</span></a>
+  <a class="brand" href="/">${site.logo ? `<img class="brand-logo" src="/media/${Number(site.logo)}" alt="">` : '<span class="brand-mark" aria-hidden="true">❦</span>'}<span>${h(site.title)}</span></a>
   <form class="search" action="/search" method="get" role="search">
     <input type="search" name="q" placeholder="Search the library…" aria-label="Search the library" value="${h(data.q || '')}">
   </form>
 </header>
 <main id="main">${body}</main>
-<script type="application/json" id="page-data">${json({ site: { title: site.title, tagline: site.tagline }, ...data })}</script>
+<script type="application/json" id="page-data">${json({ site: { title: site.title, tagline: site.tagline, downloads: data.canDownload !== false }, ...data })}</script>
 <script type="module" src="/js/${script}?v=${V}"></script>
 </body>
 </html>`;

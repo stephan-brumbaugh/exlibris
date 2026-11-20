@@ -51,20 +51,22 @@ const coverBtns = el('div', { class: 'stack' },
     el('button', { class: 'btn danger', onclick: guard(async () => { if (!confirm('Remove the cover?')) return; await api('DELETE', `/books/${id}/cover`); data.preview.cover = null; updatePreview(); }) }, 'Remove')));
 
 const results = el('div');
-async function findOnline(title, authors, isbn) {
-  results.replaceChildren(el('p', { class: 'muted' }, 'Searching Open Library and Google Books…'));
-  const qs = new URLSearchParams({ title: title ?? F.title.value, authors: authors ?? F.authors.value, ...(isbn ? { isbn } : {}) });
+async function findOnline(title, authors, isbn, url) {
+  results.replaceChildren(el('p', { class: 'muted' }, url ? 'Reading that page…' : 'Searching Open Library and Google Books…'));
+  const qs = new URLSearchParams(url ? { url } : { title: title ?? F.title.value, authors: authors ?? F.authors.value, ...(isbn ? { isbn } : {}) });
   try {
     const cands = await api('GET', `/books/${id}/lookup?${qs}`);
     const tIn = el('input', { value: title ?? F.title.value }), aIn = el('input', { value: authors ?? F.authors.value }), iIn = el('input', { placeholder: 'ISBN', value: isbn || '' });
     const replace = el('input', { type: 'checkbox' });
     results.replaceChildren(
       el('div', { class: 'row', style: { marginBottom: '8px' } }, tIn, aIn, iIn, el('button', { class: 'btn small', onclick: () => findOnline(tIn.value, aIn.value, iIn.value) }, 'Search again')),
+      (() => { const u = el('input', { type: 'url', placeholder: 'or paste the book’s page on Goodreads, Hardcover, Open Library…', style: { flex: 1 } });
+        return el('div', { class: 'row', style: { marginBottom: '8px' } }, u, el('button', { class: 'btn small', onclick: () => u.value && findOnline(null, null, null, u.value.trim()) }, 'Use this page')); })(),
       el('label', { class: 'inline small' }, replace, 'Replace the current cover'),
       cands.length ? el('div', {}, ...cands.slice(0, 10).map(c => el('div', { class: 'cand' },
         c.coverUrl ? el('img', { src: c.coverUrl.replace('-L.jpg', '-M.jpg'), alt: '', loading: 'lazy' }) : el('div', { class: 'ph', style: { width: '54px', height: '80px', background: 'var(--chip)' } }),
         el('div', {}, el('strong', {}, c.title), el('div', { class: 'small muted' }, [c.authors, c.year, c.publisher, c.pages ? `${c.pages} pp` : null, c.isbn].filter(Boolean).join(' · ')),
-          el('div', { class: 'small muted' }, `${c.source === 'google' ? 'Google Books' : 'Open Library'} · match ${Math.round(c.score * 100)}%`)),
+          el('div', { class: 'small muted' }, c.source === 'web' ? 'From the page you pasted' : `${c.source === 'google' ? 'Google Books' : 'Open Library'} · match ${Math.round(c.score * 100)}%`)),
         el('div', { class: 'stack' },
           el('button', { class: 'btn small primary', onclick: guard(() => apply(c, false, replace.checked)) }, 'Fill blanks'),
           el('button', { class: 'btn small', onclick: guard(() => apply(c, true, replace.checked)) }, 'Overwrite'))))) : el('p', { class: 'muted' }, 'Nothing found. Try a shorter title or an ISBN.'));
@@ -120,6 +122,27 @@ async function pickSpineImage() {
 const spineImgText = el('span', { class: 'small muted' });
 function spineImgLabel() { spineImgText.textContent = F.spine_image.value ? `Using image #${F.spine_image.value}` : 'Generated spine'; }
 
+/** Previous / Next through the list you came from on the Books page, with Save & next. */
+function prevNext(save) {
+  let order = [];
+  try { order = JSON.parse(sessionStorage.getItem('exl-book-order') || '[]'); } catch { /* */ }
+  const i = order.indexOf(id);
+  if (i < 0) return [];
+  const prev = order[i - 1], next = order[i + 1];
+  const go = to => { dirty = false; location.href = `/admin/books/${to}`; };
+  return [
+    el('button', { class: 'btn', disabled: !prev, title: 'Previous book (Alt+←)', onclick: () => { if (!dirty || confirm('Leave without saving?')) go(prev); } }, '‹'),
+    el('span', { class: 'small muted' }, `${i + 1} of ${order.length}`),
+    el('button', { class: 'btn', disabled: !next, title: 'Next book (Alt+→)', onclick: () => { if (!dirty || confirm('Leave without saving?')) go(next); } }, '›'),
+    next ? el('button', { class: 'btn', title: 'Save this book and open the next one', onclick: async () => { await save(); if (!dirty) go(next); } }, 'Save & next') : null,
+  ].filter(Boolean);
+}
+document.addEventListener('keydown', e => {
+  if (!e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+  const b = [...document.querySelectorAll('.content .row .btn')].find(x => x.textContent === (e.key === 'ArrowLeft' ? '‹' : '›'));
+  if (b && !b.disabled) { e.preventDefault(); b.click(); }
+});
+
 function mergePanel() {
   const other = el('input', { type: 'number', placeholder: 'other book’s number', style: { width: '170px' } });
   return el('section', { class: 'panel stack' }, el('h2', {}, 'Same book, separate entry?'),
@@ -164,6 +187,7 @@ function render() {
         const files = data.files.some(f => f.origin === 'upload') && confirm('Also delete the files uploaded for this book?');
         await api('DELETE', `/books/${id}${files ? '?deleteFiles=1' : ''}`); location.href = '/admin/books';
       }) }, 'Delete'),
+      ...prevNext(save),
       el('button', { class: 'btn primary', onclick: save }, 'Save')),
     el('div', { class: 'edit-layout' },
       el('div', { class: 'edit-cover' }, preview, coverBtns,

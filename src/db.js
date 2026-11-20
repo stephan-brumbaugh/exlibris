@@ -147,6 +147,11 @@ const MIGRATIONS = [
   ALTER TABLE shelves ADD COLUMN collection TEXT NOT NULL DEFAULT 'any';
   UPDATE shelves SET collection = 'physical' WHERE generated_by LIKE 'import:%';
   `,
+  // 4 — spacers with a width, decorations that hang higher up the back of the shelf
+  `
+  ALTER TABLE shelf_items ADD COLUMN width INTEGER;
+  ALTER TABLE shelf_items ADD COLUMN raise INTEGER;
+  `,
 ];
 
 export function openDb(file = config.dbFile) {
@@ -180,6 +185,9 @@ export const DEFAULT_SITE = {
   tagline: 'A personal library',
   theme: { preset: 'walnut' },
   homeIntro: '',
+  publicLibrary: true,     // false: visitors must sign in to see anything
+  publicDownloads: true,   // false: only the signed-in admin can download files
+  logo: null,              // media id shown beside the library name
 };
 
 export function siteSettings() {

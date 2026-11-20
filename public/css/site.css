@@ -137,3 +137,9 @@ main { padding: 0 clamp(16px, 3vw, 36px) 80px; }
   .search input { width: 44vw; }
   .brand span:last-child { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; }
 }
+
+.bk-nav { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(42,33,24,.15); padding-top: 14px; margin-top: 4px; font-size: 14px; color: #7a6a56; }
+.bk-nav button { font: inherit; background: none; border: 1px solid rgba(42,33,24,.3); color: #2a2118; padding: 6px 14px; border-radius: 4px; cursor: pointer; }
+.bk-nav button:disabled { opacity: .35; cursor: default; }
+
+.brand-logo { height: 30px; width: auto; border-radius: 4px; }

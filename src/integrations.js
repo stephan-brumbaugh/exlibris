@@ -1,7 +1,7 @@
 // Audiobookshelf + Plex: pull the catalogue, suggest matches, and let the admin confirm. Nothing here ever deletes a book.
 import { getDb, getSetting } from './db.js';
 import { createBook, updateBook, getBook } from './books.js';
-import { matchKey, similarity, normAuthor } from './util.js';
+import { matchKey, similarity, normAuthor, isbn13 } from './util.js';
 import { saveCover, fetchImage } from './covers.js';
 
 const trimSlash = s => String(s || '').replace(/\/+$/, '');
@@ -97,7 +97,13 @@ export async function fetchPlex() {
 }
 
 // ───────────── Matching ─────────────
-function suggest(item, books, byKey) {
+function suggest(item, books, byKey, byIsbn) {
+  // Same ISBN (10- or 13-digit form) is the strongest evidence, as long as the authors don't disagree.
+  const isbn = isbn13(item.payload?.isbn);
+  const byI = isbn && byIsbn.get(isbn);
+  if (byI && (!item.authors || !byI.authors || normAuthor(byI.authors).split(' ').some(t => t.length > 2 && normAuthor(item.authors).includes(t)))) {
+    return { book: byI, confidence: 'exact', score: 1 };
+  }
   const exact = byKey.get(matchKey(item.title, item.authors));
   if (exact) return { book: exact, confidence: 'exact', score: 1 };
   let best = null, bestScore = 0;
@@ -115,8 +121,9 @@ function suggest(item, books, byKey) {
 export async function refreshCandidates(provider) {
   const items = provider === 'abs' ? await fetchAbs() : await fetchPlex();
   const db = getDb();
-  const books = db.prepare('SELECT id, title, authors, abs_id, plex_key FROM books').all();
+  const books = db.prepare('SELECT id, title, authors, isbn, abs_id, plex_key FROM books').all();
   const byKey = new Map(books.map(b => [matchKey(b.title, b.authors), b]));
+  const byIsbn = new Map(books.filter(b => isbn13(b.isbn)).map(b => [isbn13(b.isbn), b]));
   const linkedField = provider === 'abs' ? 'abs_id' : 'plex_key';
   const linked = new Map(books.filter(b => b[linkedField]).map(b => [b[linkedField], b.id]));
   const up = db.prepare(`INSERT INTO match_candidates (provider, external_id, title, authors, series, series_index, url, cover_url, description, suggested_book_id, confidence, score, status, payload)
@@ -131,7 +138,7 @@ export async function refreshCandidates(provider) {
   db.transaction(() => {
     for (const it of items) {
       const already = linked.get(it.external_id);
-      const s = already ? { book: { id: already }, confidence: 'exact', score: 1 } : suggest(it, books, byKey);
+      const s = already ? { book: { id: already }, confidence: 'exact', score: 1 } : suggest(it, books, byKey, byIsbn);
       if (already) counts.alreadyLinked++; else counts[s.confidence]++;
       up.run({ provider, ...it, payload: JSON.stringify(it.payload || {}), suggested_book_id: s.book?.id ?? null, confidence: s.confidence, score: s.score, status: already ? 'linked' : 'pending' });
     }

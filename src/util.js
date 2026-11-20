@@ -10,7 +10,7 @@ export function slugify(s) {
 
 /** Normalise a title for matching: lowercase, no accents/punctuation, no leading article, no subtitle. */
 export function normTitle(s, { keepSubtitle = false } = {}) {
-  let t = String(s || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  let t = String(s || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/['’‘`]/g, '').toLowerCase(); // "Hitchhiker's" = "Hitchhikers"
   if (!keepSubtitle) t = t.split(/\s*[:(\[]\s*/)[0];
   t = t.replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
   t = t.replace(/^(the|a|an) /, '');
@@ -20,7 +20,7 @@ export function normTitle(s, { keepSubtitle = false } = {}) {
 /** Normalise an author: surname-first or first-surname both reduce to sorted tokens of the first author. */
 export function normAuthor(s) {
   const first = String(s || '').split(/;|&| and |\|/i)[0];
-  let a = first.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  let a = first.normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/['’‘`]/g, '').toLowerCase();
   if (a.includes(',')) { const [last, rest] = a.split(',', 2); a = `${rest} ${last}`; }
   return a.replace(/[^a-z]+/g, ' ').trim().split(' ').filter(w => w.length > 1).sort().join(' ');
 }
@@ -88,3 +88,14 @@ export function safeFilename(name) {
 export function toInt(v, d = null) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; }
 export function toNum(v, d = null) { const n = parseFloat(v); return Number.isFinite(n) ? n : d; }
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/** ISBN-10 or ISBN-13 (with or without dashes) -> ISBN-13 digits, or null. Lets both forms of one edition match. */
+export function isbn13(v) {
+  const d = String(v || '').toUpperCase().replace(/[^0-9X]/g, '');
+  if (d.length === 13 && /^97[89]\d{10}$/.test(d)) return d;
+  if (d.length !== 10 || !/^\d{9}[\dX]$/.test(d)) return null;
+  const core = '978' + d.slice(0, 9);
+  let sum = 0;
+  for (let i = 0; i < 12; i++) sum += Number(core[i]) * (i % 2 ? 3 : 1);
+  return core + ((10 - (sum % 10)) % 10);
+}
